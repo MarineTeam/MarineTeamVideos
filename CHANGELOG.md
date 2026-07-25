@@ -2,8 +2,13 @@
 
 Notable changes to this project, newest first. Grouped by date, since most
 days below were their own batch of work rather than a discrete release.
-Five version tags mark points release notes were cut from this history:
+Six version tags mark points release notes were cut from this history:
 
+- **v1.5.0** — a per-video private access list (YouTube-style invite list)
+  with an optional notify-by-email toggle, an admin geo bypass list,
+  index-set-backed listings/lookups (replacing full keyspace scans), and
+  fixes for stale bundles, host header poisoning in email links, and three
+  dependency CVEs.
 - **v1.4.0** — env-var-based geo location whitelists for both recipient
   pages and the admin surface.
 - **v1.3.0** — Delete permanently, Restore (un-revoke), persistent bundle
@@ -16,7 +21,7 @@ Five version tags mark points release notes were cut from this history:
   their bulk forms).
 - **v1.0.0** — everything at and before 2026-07-06.
 
-## 2026-07-25 (post-v1.4.0)
+## v1.5.0 — 2026-07-25
 
 ### Added
 - **Private access list per video.** A YouTube-style "share privately with
@@ -40,23 +45,12 @@ Five version tags mark points release notes were cut from this history:
   matching Google Drive/YouTube's own sharing dialogs) — unchecking it still
   creates a fully live share for each newly added email, it just skips the
   notification send (`addInvitees({..., notify: false})`).
-
-## 2026-07-22 (post-v1.4.0)
-
-### Fixed
-- **Stale bundles.** `/api/cleanup` used to retire a bundle only once its
-  own `expiresAt` passed — but a bundle has no `revoked` flag, and its
-  `expiresAt` tracks the MAX of every member ever added (only growing, via
-  Extend), so revoking or permanently deleting every video in a bundle
-  left a fully live, gate-able bundle record behind with nothing left to
-  show, potentially for a long time. Cleanup now also retires a bundle the
-  moment none of its listed members are live (revoked, expired, or
-  deleted) anymore, regardless of the bundle's own expiry. Verified live
-  against a mock KV store: bulk-shared 2 videos into one bundle with a
-  ~1-year expiry, revoked and permanently deleted both members, confirmed
-  the bundle record was untouched by that alone, then ran cleanup and
-  confirmed it was removed (from KV and its index) despite being nowhere
-  near its own expiry.
+- **Admin geo bypass list.** `ADMIN_GEO_BYPASS_EMAILS` lists Basic Auth
+  usernames (case-insensitive) that always skip the admin geo check,
+  regardless of country or the enforcement toggle — checked first, with no
+  KV lookup. Same env-var-only, read-only-in-Settings pattern as the geo
+  whitelists themselves. Meant to be armed **before** traveling, not used
+  to escape a lockout after the fact: env var changes need a redeploy.
 
 ### Changed
 - **Replaced KEYS scans with index sets.** The admin shares listing, bundle
@@ -86,16 +80,25 @@ Five version tags mark points release notes were cut from this history:
   run (then present, and idempotent on a second run), and confirmed
   cleanup both deletes real expired records and silently drops an injected
   orphan index entry without miscounting it as deleted.
-
-### Added
-- **Admin geo bypass list.** `ADMIN_GEO_BYPASS_EMAILS` lists Basic Auth
-  usernames (case-insensitive) that always skip the admin geo check,
-  regardless of country or the enforcement toggle — checked first, with no
-  KV lookup. Same env-var-only, read-only-in-Settings pattern as the geo
-  whitelists themselves. Meant to be armed **before** traveling, not used
-  to escape a lockout after the fact: env var changes need a redeploy.
+- **UI polish pass** across the admin, watch, and bundle pages: hover/focus
+  states, a real overlay modal for the share form, status pills, and
+  striped/scrollable tables. Cosmetic only — no fetch calls, payloads, or
+  auth logic touched.
 
 ### Fixed
+- **Stale bundles.** `/api/cleanup` used to retire a bundle only once its
+  own `expiresAt` passed — but a bundle has no `revoked` flag, and its
+  `expiresAt` tracks the MAX of every member ever added (only growing, via
+  Extend), so revoking or permanently deleting every video in a bundle
+  left a fully live, gate-able bundle record behind with nothing left to
+  show, potentially for a long time. Cleanup now also retires a bundle the
+  moment none of its listed members are live (revoked, expired, or
+  deleted) anymore, regardless of the bundle's own expiry. Verified live
+  against a mock KV store: bulk-shared 2 videos into one bundle with a
+  ~1-year expiry, revoked and permanently deleted both members, confirmed
+  the bundle record was untouched by that alone, then ran cleanup and
+  confirmed it was removed (from KV and its index) despite being nowhere
+  near its own expiry.
 - **Host header poisoning in email links (CodeQL critical, alerts #5/#6).**
   `baseUrl()` (`lib/shares.js`) used to fall back to the request's `Host`
   header — client-suppliable — whenever `SITE_URL` was unset, letting a
