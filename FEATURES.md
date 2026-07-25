@@ -18,6 +18,21 @@ pair gets its own distinct link — an M-recipient, N-video bulk share creates
 M×N independent links, not M×N copies of the same one. Each recipient
 receives a single email listing only their own links, never anyone else's.
 
+### Private access list (per-video invite list)
+Each video also has a **Private list** — a persistent, editable list of
+invited emails, similar to a private YouTube video, instead of one-off
+links. Open it from the video card, type emails, and only the ones not
+already on that video's list are added: each becomes a normal share (same
+token/link/email-gate machinery as Single share) and gets the usual
+notification email. Emails already on the list are left completely alone —
+no new record, no re-sent email — so editing the list only ever notifies
+people who are actually new. Removing someone from the list revokes their
+share immediately (the underlying record is flagged, never deleted, same as
+Revoke); inviting that same email again later is treated as a brand new
+invite. The list itself stores only membership (email, token, when added) —
+each entry's status (active/expired/revoked) is always read live from its
+own share record, never duplicated, so it can never go stale.
+
 ### One bundle per recipient
 Sharing something new to an email address that already has an active share
 — whether via a single share or a bulk share, in either order, at any later
