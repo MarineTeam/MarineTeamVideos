@@ -35,7 +35,11 @@ Five version tags mark points release notes were cut from this history:
   emails) and `/api/video-invite/remove` (POST remove one email), both
   behind the existing admin Basic Auth matcher. The list itself is purely a
   membership record — status is always read live from each member's own
-  `bunnyshare:<token>`, never duplicated, so it can't go stale.
+  `bunnyshare:<token>`, never duplicated, so it can't go stale. The add form
+  also has a **"Notify new people by email"** checkbox (on by default,
+  matching Google Drive/YouTube's own sharing dialogs) — unchecking it still
+  creates a fully live share for each newly added email, it just skips the
+  notification send (`addInvitees({..., notify: false})`).
 
 ## 2026-07-22 (post-v1.4.0)
 
