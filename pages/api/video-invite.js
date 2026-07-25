@@ -3,9 +3,10 @@ import { addInvitees, getInviteWithStatus } from "../../lib/invites";
 
 // Admin-only (covered by the default middleware matcher, same as /api/share).
 // GET  ?videoId=<id>   -> current invite list for one video, with live status.
-// POST {videoId, videoTitle, emails, hours, watermark} -> adds any emails not
-//      already on the list (each becomes a normal share record + the usual
-//      notification email); emails already on the list are untouched.
+// POST {videoId, videoTitle, emails, hours, watermark, notify} -> adds any
+//      emails not already on the list (each becomes a normal share record);
+//      unless notify is explicitly false, each new addition also gets the
+//      usual notification email. Emails already on the list are untouched.
 export default async function handler(req, res) {
   try {
     if (req.method === "GET") {
@@ -16,7 +17,7 @@ export default async function handler(req, res) {
     }
 
     if (req.method === "POST") {
-      const { videoId, videoTitle, emails, hours, watermark } = req.body || {};
+      const { videoId, videoTitle, emails, hours, watermark, notify } = req.body || {};
       const recipients = parseEmails(emails);
       if (!videoId || recipients.length === 0) {
         return res.status(400).json({ error: "videoId and at least one email are required" });
@@ -29,6 +30,7 @@ export default async function handler(req, res) {
         hours,
         watermark: typeof watermark === "boolean" ? watermark : undefined,
         siteUrl: baseUrl(req),
+        notify: notify !== false,
       });
 
       const invite = await getInviteWithStatus(videoId);

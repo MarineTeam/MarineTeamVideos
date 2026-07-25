@@ -50,6 +50,7 @@ export default function Admin() {
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteHours, setInviteHours] = useState(8760);
   const [inviteWatermark, setInviteWatermark] = useState("default");
+  const [inviteNotify, setInviteNotify] = useState(true);
   const [inviteSaving, setInviteSaving] = useState(false);
 
   function toggleSelected(id) {
@@ -252,6 +253,7 @@ export default function Admin() {
         emails: inviteEmail,
         hours: inviteHours,
         watermark: wmValue(inviteWatermark),
+        notify: inviteNotify,
       }),
     });
     const data = await res.json();
@@ -259,7 +261,9 @@ export default function Admin() {
     if (data.ok) {
       let msg =
         data.added.length > 0
-          ? `Invited ${data.added.map((a) => a.email).join(", ")}`
+          ? inviteNotify
+            ? `Invited ${data.added.map((a) => a.email).join(", ")}`
+            : `Added ${data.added.map((a) => a.email).join(", ")} (no email sent)`
           : "No new emails to invite";
       if (data.alreadyInvited.length > 0) {
         msg += ` — already on the list: ${data.alreadyInvited.join(", ")}`;
@@ -818,6 +822,14 @@ export default function Admin() {
                 <option value="off">Never</option>
               </select>
             </div>
+            <label style={{ ...styles.fieldLabel, marginTop: 12, cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={inviteNotify}
+                onChange={(e) => setInviteNotify(e.target.checked)}
+              />{" "}
+              Notify new people by email
+            </label>
             <div style={{ marginTop: 20, display: "flex", gap: 8 }}>
               <button onClick={submitInvite} disabled={inviteSaving} className="btn btn-primary">
                 {inviteSaving ? "Saving..." : "Add to list"}

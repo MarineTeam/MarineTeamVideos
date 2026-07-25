@@ -23,10 +23,14 @@ Each video also has a **Private list** — a persistent, editable list of
 invited emails, similar to a private YouTube video, instead of one-off
 links. Open it from the video card, type emails, and only the ones not
 already on that video's list are added: each becomes a normal share (same
-token/link/email-gate machinery as Single share) and gets the usual
-notification email. Emails already on the list are left completely alone —
-no new record, no re-sent email — so editing the list only ever notifies
-people who are actually new. Removing someone from the list revokes their
+token/link/email-gate machinery as Single share), and — unless the
+**"Notify new people by email"** checkbox (on by default, matching Google
+Drive/YouTube's own sharing dialogs) is turned off — gets the usual
+notification email. Turning it off still creates a fully live share; it
+only skips the send, for an admin who'd rather hand out the link some other
+way. Emails already on the list are left completely alone — no new record,
+no re-sent email — so editing the list only ever notifies people who are
+actually new. Removing someone from the list revokes their
 share immediately (the underlying record is flagged, never deleted, same as
 Revoke); inviting that same email again later is treated as a brand new
 invite. The list itself stores only membership (email, token, when added) —
