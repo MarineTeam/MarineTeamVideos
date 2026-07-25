@@ -40,6 +40,17 @@ export default function Admin() {
   const [savingSettings, setSavingSettings] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showAnalytics, setShowAnalytics] = useState(false);
+  // Private access list (YouTube-style "invite list") for one video: a
+  // persistent, editable membership on top of the existing Share/Bulk Share
+  // flows — see lib/invites.js. Adding an email that's already on the list
+  // is a no-op; removing revokes that person's link immediately.
+  const [inviteForVideo, setInviteForVideo] = useState(null);
+  const [inviteList, setInviteList] = useState(null);
+  const [inviteLoading, setInviteLoading] = useState(false);
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteHours, setInviteHours] = useState(8760);
+  const [inviteWatermark, setInviteWatermark] = useState("default");
+  const [inviteSaving, setInviteSaving] = useState(false);
 
   function toggleSelected(id) {
     setSelected((prev) => {
@@ -206,6 +217,78 @@ export default function Admin() {
       setMessage(msg);
       setSelected(new Set());
       setBulkEmail("");
+      loadAll();
+    } else {
+      setMessage(`Error: ${data.error}`);
+    }
+  }
+
+  async function openInvite(video) {
+    setInviteForVideo(video);
+    setInviteEmail("");
+    setInviteList(null);
+    setInviteLoading(true);
+    const res = await fetch(`/api/video-invite?videoId=${encodeURIComponent(video.id)}`);
+    const data = await res.json();
+    setInviteList(data.invite || { videoId: video.id, videoTitle: video.title, members: [] });
+    setInviteLoading(false);
+  }
+
+  function closeInvite() {
+    setInviteForVideo(null);
+    setInviteList(null);
+  }
+
+  async function submitInvite() {
+    if (!inviteForVideo) return;
+    setInviteSaving(true);
+    setMessage("Updating invite list...");
+    const res = await fetch("/api/video-invite", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        videoId: inviteForVideo.id,
+        videoTitle: inviteForVideo.title,
+        emails: inviteEmail,
+        hours: inviteHours,
+        watermark: wmValue(inviteWatermark),
+      }),
+    });
+    const data = await res.json();
+    setInviteSaving(false);
+    if (data.ok) {
+      let msg =
+        data.added.length > 0
+          ? `Invited ${data.added.map((a) => a.email).join(", ")}`
+          : "No new emails to invite";
+      if (data.alreadyInvited.length > 0) {
+        msg += ` — already on the list: ${data.alreadyInvited.join(", ")}`;
+      }
+      if (data.failures) {
+        msg += ` — FAILED to email ${data.failures.map((f) => f.email).join(", ")} (access granted, email not sent)`;
+      }
+      setMessage(msg);
+      setInviteList(data.invite);
+      setInviteEmail("");
+      loadAll();
+    } else {
+      setMessage(`Error: ${data.error}`);
+    }
+  }
+
+  async function removeInvitee(email) {
+    if (!inviteForVideo) return;
+    if (!confirm(`Remove ${email} from the private access list? Their link will be revoked immediately.`)) return;
+    setMessage("Removing...");
+    const res = await fetch("/api/video-invite/remove", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ videoId: inviteForVideo.id, email }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      setMessage(`Removed ${email}`);
+      setInviteList((prev) => prev && { ...prev, members: prev.members.filter((m) => m.email !== email) });
       loadAll();
     } else {
       setMessage(`Error: ${data.error}`);
@@ -626,6 +709,9 @@ export default function Admin() {
               <div>
                 <button onClick={() => setShareForVideo(v)} className="btn btn-primary" style={{ marginTop: 10 }}>
                   Share
+                </button>{" "}
+                <button onClick={() => openInvite(v)} className="btn btn-secondary" style={{ marginTop: 10 }}>
+                  Private list
                 </button>
               </div>
             </div>
@@ -669,6 +755,75 @@ export default function Admin() {
               </button>
               <button onClick={() => setShareForVideo(null)} className="btn btn-secondary">
                 Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {inviteForVideo && (
+        <div className="modal-overlay" onClick={closeInvite}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ marginTop: 0 }}>Private access to "{inviteForVideo.title}"</h3>
+            <p style={styles.subtitle}>
+              Invite people by email, like a private YouTube video. Adding someone already on the list
+              doesn't re-send anything; removing someone revokes their link right away.
+            </p>
+
+            {inviteLoading ? (
+              <p>Loading...</p>
+            ) : (
+              <div style={{ marginBottom: 16 }}>
+                {(!inviteList || inviteList.members.length === 0) && (
+                  <p style={{ opacity: 0.7 }}>Nobody has been invited yet.</p>
+                )}
+                {inviteList &&
+                  inviteList.members.map((m) => (
+                    <div key={m.email} style={styles.inviteRow}>
+                      <span>{m.email}</span>
+                      <span style={styles.inviteStatus}>
+                        {m.revoked ? "Revoked" : m.expiresAt && Date.now() > m.expiresAt ? "Expired" : "Active"}
+                        {m.emailFailed && " · email failed"}
+                      </span>
+                      <button onClick={() => removeInvitee(m.email)} className="btn btn-danger" style={styles.rowBtn}>
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+              </div>
+            )}
+
+            <input
+              type="text"
+              placeholder="add emails, comma or space separated"
+              value={inviteEmail}
+              onChange={(e) => setInviteEmail(e.target.value)}
+              className="input"
+            />
+            <div style={{ marginTop: 12 }}>
+              <label style={styles.fieldLabel}>Access valid for (hours)</label>
+              <input
+                type="number"
+                value={inviteHours}
+                onChange={(e) => setInviteHours(e.target.value)}
+                className="input"
+                style={{ width: 120 }}
+              />
+            </div>
+            <div style={{ marginTop: 12 }}>
+              <label style={styles.fieldLabel}>Watermark new viewers' email</label>
+              <select value={inviteWatermark} onChange={(e) => setInviteWatermark(e.target.value)} style={{ width: "100%" }}>
+                <option value="default">Default (global setting)</option>
+                <option value="on">Always</option>
+                <option value="off">Never</option>
+              </select>
+            </div>
+            <div style={{ marginTop: 20, display: "flex", gap: 8 }}>
+              <button onClick={submitInvite} disabled={inviteSaving} className="btn btn-primary">
+                {inviteSaving ? "Saving..." : "Add to list"}
+              </button>
+              <button onClick={closeInvite} className="btn btn-secondary">
+                Done
               </button>
             </div>
           </div>
@@ -881,4 +1036,6 @@ const styles = {
   wmBadge: { marginLeft: 6, fontSize: 12 },
   wmBadgeOff: { marginLeft: 6, fontSize: 11, color: "#57606a", border: "1px solid #d0d7de", borderRadius: 4, padding: "0 4px" },
   rowBtn: { padding: "5px 10px", fontSize: 13, marginRight: 6 },
+  inviteRow: { display: "flex", alignItems: "center", gap: 10, padding: "6px 0", borderBottom: "1px solid #eaeef2" },
+  inviteStatus: { fontSize: 12, color: "#57606a", flex: 1 },
 };

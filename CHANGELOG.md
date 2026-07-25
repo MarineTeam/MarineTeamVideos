@@ -16,6 +16,27 @@ Five version tags mark points release notes were cut from this history:
   their bulk forms).
 - **v1.0.0** — everything at and before 2026-07-06.
 
+## 2026-07-25 (post-v1.4.0)
+
+### Added
+- **Private access list per video.** A YouTube-style "share privately with
+  a list of people" feature, on top of the existing Share/Bulk Share flows.
+  Each video gets a "Private list" button opening a persistent, editable
+  invite list (`lib/invites.js`, `bunnyinvite:<videoId>` KV record —
+  `{videoId, videoTitle, members: [{email, token, addedAt}]}`). Adding
+  emails only creates a share + sends the notification email for the ones
+  not already on that video's list (same `createShareRecord`/
+  `findOrExtendBundle`/`sendShareEmail` path as `/api/share`); emails
+  already on the list are untouched — no duplicate record, no re-sent
+  email. Removing an email revokes its underlying share immediately (flag,
+  never delete — same as `/api/revoke`) and drops it from the list;
+  re-inviting that email later is a fresh invite. New routes:
+  `/api/video-invite` (GET list with live per-member status / POST add
+  emails) and `/api/video-invite/remove` (POST remove one email), both
+  behind the existing admin Basic Auth matcher. The list itself is purely a
+  membership record — status is always read live from each member's own
+  `bunnyshare:<token>`, never duplicated, so it can't go stale.
+
 ## 2026-07-22 (post-v1.4.0)
 
 ### Fixed
