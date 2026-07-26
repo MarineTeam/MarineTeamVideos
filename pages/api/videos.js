@@ -1,10 +1,19 @@
-import { listVideos } from "../../lib/bunny";
+import { listVideos, listCollections } from "../../lib/bunny";
 
 export default async function handler(req, res) {
   if (req.method !== "GET") return res.status(405).end();
   try {
-    const videos = await listVideos();
-    res.status(200).json({ videos });
+    // Videos are the load-bearing part of this response — if collections
+    // fails for any reason, still return videos rather than 500ing the
+    // whole admin grid over what's ultimately a grouping label.
+    const [videos, collections] = await Promise.all([
+      listVideos(),
+      listCollections().catch((err) => {
+        console.error("Failed to list collections (non-fatal):", err);
+        return [];
+      }),
+    ]);
+    res.status(200).json({ videos, collections });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

@@ -1,6 +1,7 @@
 import { createShareRecord, setEmailFailed, baseUrl, parseEmails } from "../../lib/shares";
 import { findOrExtendBundle, getBundleItems } from "../../lib/bundles";
 import { sendBulkShareEmail } from "../../lib/mailer";
+import { resolveGroupEmails } from "../../lib/groups";
 
 // Creates a separate share (distinct token + link) for every recipient x video
 // pair and emails each recipient one message listing only THEIR links. Every
@@ -10,11 +11,16 @@ export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).end();
 
   try {
-    const { videos, emails, email, hours, watermark } = req.body;
+    const { videos, emails, email, groupIds, hours, watermark } = req.body;
     // parseEmails splits comma/semicolon/whitespace-joined strings in BOTH
     // shapes — a legacy client sending email:"a@b.c, d@e.f" must fan out to
     // two recipients, never become one record with a combined email string.
-    const recipients = parseEmails(emails ?? email);
+    // groupIds (optional) resolves each named viewer group (lib/groups.js)
+    // to its member emails and folds them into the same recipient list, so
+    // "share with Team A" needs no more than typing their emails would.
+    const groupEmails = await resolveGroupEmails(groupIds);
+    const typed = Array.isArray(emails ?? email) ? emails ?? email : [emails ?? email];
+    const recipients = parseEmails([...typed, ...groupEmails]);
 
     if (!Array.isArray(videos) || videos.length === 0 || recipients.length === 0) {
       return res
