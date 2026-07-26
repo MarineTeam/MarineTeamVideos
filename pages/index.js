@@ -830,6 +830,7 @@ export default function Admin() {
                 setBulkEmail((prev) => mergeGroupIntoEmails(prev, e.target.value));
                 setBulkGroupPick("");
               }}
+              style={{ flex: "0 0 auto", width: "auto" }}
             >
               <option value="">+ Add group...</option>
               {groups.map((g) => (
@@ -999,14 +1000,14 @@ export default function Admin() {
               </div>
             )}
 
-            <div style={{ display: "flex", gap: 8 }}>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               <input
                 type="text"
                 placeholder="add emails, comma or space separated"
                 value={inviteEmail}
                 onChange={(e) => setInviteEmail(e.target.value)}
                 className="input"
-                style={{ flex: 1 }}
+                style={{ flex: "1 1 180px", minWidth: 0 }}
               />
               {groups.length > 0 && (
                 <select
@@ -1015,6 +1016,7 @@ export default function Admin() {
                     setInviteEmail((prev) => mergeGroupIntoEmails(prev, e.target.value));
                     setInviteGroupPick("");
                   }}
+                  style={{ flex: "0 0 auto", width: "auto" }}
                 >
                   <option value="">+ Add group...</option>
                   {groups.map((g) => (
