@@ -21,6 +21,33 @@ Six version tags mark points release notes were cut from this history:
   their bulk forms).
 - **v1.0.0** — everything at and before 2026-07-06.
 
+## 2026-07-26
+
+### Added
+- **Named viewer groups.** Labelled, admin-editable lists of emails (e.g.
+  "Team A") that can be inserted into Bulk Share or a video's Private list
+  instead of retyping the same recipients every time. New `lib/groups.js`
+  (`bunnygroup:<id>` KV record — `{id, name, emails[], createdAt,
+  updatedAt}` — plus a `bunnygroup-index` set) and CRUD routes `/api/groups`
+  (GET list / POST create) and `/api/groups/[groupId]` (GET / PUT / DELETE).
+  `/api/share-bulk` and `/api/video-invite` accept an optional `groupIds`
+  array and resolve it (`resolveGroupEmails`) into the recipient list
+  alongside typed emails. A group only supplies emails — it grants no
+  access itself, so editing or deleting a group never touches shares
+  already created from its members. Managed from a new "👥 Viewer groups"
+  panel on the admin page, with quick "+ Add group..." pickers in the Bulk
+  Share bar and the Private list modal.
+- **Per-collection sharing.** `listVideos()` now includes each video's
+  Bunny `collectionId`, and a new `listCollections()` fetches the
+  library's collection list (name + video count) from the Bunny Stream
+  API; `/api/videos` returns both as `{ videos, collections }` (the
+  collections fetch is non-fatal — a failure there still returns videos
+  rather than 500ing the whole admin grid). The admin page shows a row of
+  collection buttons above the video grid ("📁 Team Offsite (12)"); clicking
+  one adds every video in that collection to the current selection, which
+  feeds directly into the existing Bulk Share bar — no separate sharing
+  path, just a shortcut into the one that already exists.
+
 ## v1.5.0 — 2026-07-25
 
 ### Added

@@ -37,6 +37,30 @@ invite. The list itself stores only membership (email, token, when added) —
 each entry's status (active/expired/revoked) is always read live from its
 own share record, never duplicated, so it can never go stale.
 
+### Viewer groups
+Named, admin-editable lists of emails (e.g. "Team A", "External
+Reviewers") that stand in for retyping the same recipients into every
+Bulk Share or Private list you create. Manage them from the "👥 Viewer
+groups" panel: create a group with a name and a set of emails, edit its
+membership, or delete it. From the Bulk Share bar or a video's Private
+list, an "+ Add group..." picker inserts a group's emails into the
+recipient field, deduplicated against whatever's already typed there. A
+group is only a label on a set of emails — it grants no access by itself
+and is never checked at watch time; the moment you send, each email still
+goes through the normal per-recipient share machinery. Deleting or editing
+a group never touches links already created from its members.
+
+### Per-collection sharing
+Videos can be organized into collections in your Bunny Stream library. The
+admin page shows one button per non-empty collection above the video grid
+("📁 Team Offsite (12)"); clicking it selects every video in that
+collection at once. There's no separate "share a collection" flow — the
+selection feeds straight into the same Bulk Share bar used for any
+hand-picked set of videos, so a collection is just a fast way to build a
+selection, not a new sharing mechanism. Collections themselves are read
+directly from Bunny (via the library's `/collections` endpoint) rather
+than being modeled or stored in this app.
+
 ### One bundle per recipient
 Sharing something new to an email address that already has an active share
 — whether via a single share or a bulk share, in either order, at any later
