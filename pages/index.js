@@ -52,6 +52,18 @@ export default function Admin() {
   const [inviteWatermark, setInviteWatermark] = useState("default");
   const [inviteNotify, setInviteNotify] = useState(true);
   const [inviteSaving, setInviteSaving] = useState(false);
+  // Named viewer groups (lib/groups.js) — a labelled list of emails an admin
+  // can pick instead of retyping the same recipients into Bulk Share or a
+  // video's Private list every time.
+  const [groups, setGroups] = useState([]);
+  const [showGroups, setShowGroups] = useState(false);
+  const [newGroupName, setNewGroupName] = useState("");
+  const [newGroupEmails, setNewGroupEmails] = useState("");
+  const [groupSaving, setGroupSaving] = useState(false);
+  const [editingGroupId, setEditingGroupId] = useState(null);
+  const [editingGroupEmails, setEditingGroupEmails] = useState("");
+  const [bulkGroupPick, setBulkGroupPick] = useState("");
+  const [inviteGroupPick, setInviteGroupPick] = useState("");
 
   function toggleSelected(id) {
     setSelected((prev) => {
@@ -73,15 +85,83 @@ export default function Admin() {
 
   async function loadAll() {
     setLoading(true);
-    const [vRes, sRes, setRes] = await Promise.all([
+    const [vRes, sRes, setRes, gRes] = await Promise.all([
       fetch("/api/videos").then((r) => r.json()),
       fetch("/api/shares").then((r) => r.json()),
       fetch("/api/settings").then((r) => r.json()).catch(() => ({})),
+      fetch("/api/groups").then((r) => r.json()).catch(() => ({})),
     ]);
     setVideos(vRes.videos || []);
     setShares(sRes.shares || []);
     if (setRes && setRes.settings) applySettings(setRes.settings);
+    setGroups((gRes && gRes.groups) || []);
     setLoading(false);
+  }
+
+  async function createGroup() {
+    if (!newGroupName.trim() || !newGroupEmails.trim()) return;
+    setGroupSaving(true);
+    const res = await fetch("/api/groups", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: newGroupName, emails: newGroupEmails }),
+    });
+    const data = await res.json();
+    setGroupSaving(false);
+    if (data.ok) {
+      setGroups((prev) => [...prev, data.group].sort((a, b) => a.name.localeCompare(b.name)));
+      setNewGroupName("");
+      setNewGroupEmails("");
+      setMessage(`Created group "${data.group.name}"`);
+    } else {
+      setMessage(`Error: ${data.error}`);
+    }
+  }
+
+  function startEditGroup(group) {
+    setEditingGroupId(group.id);
+    setEditingGroupEmails(group.emails.join(", "));
+  }
+
+  async function saveEditGroup(groupId) {
+    const res = await fetch(`/api/groups/${groupId}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ emails: editingGroupEmails }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      setGroups((prev) => prev.map((g) => (g.id === groupId ? data.group : g)));
+      setEditingGroupId(null);
+      setMessage(`Updated group "${data.group.name}"`);
+    } else {
+      setMessage(`Error: ${data.error}`);
+    }
+  }
+
+  async function removeGroup(group) {
+    if (!confirm(`Delete group "${group.name}"? This only removes the label — it doesn't revoke any links already shared with its members.`)) return;
+    const res = await fetch(`/api/groups/${group.id}`, { method: "DELETE" });
+    const data = await res.json();
+    if (data.ok) {
+      setGroups((prev) => prev.filter((g) => g.id !== group.id));
+      setMessage(`Deleted group "${group.name}"`);
+    } else {
+      setMessage(`Error: ${data.error}`);
+    }
+  }
+
+  // Appends a group's emails into an existing comma-separated recipient
+  // string without duplicating anyone already typed in.
+  function mergeGroupIntoEmails(current, groupId) {
+    const group = groups.find((g) => g.id === groupId);
+    if (!group) return current;
+    const existing = new Set(
+      current.split(/[,;\s]+/).map((e) => e.trim().toLowerCase()).filter(Boolean)
+    );
+    const toAdd = group.emails.filter((e) => !existing.has(e.toLowerCase()));
+    if (toAdd.length === 0) return current;
+    return current ? `${current}, ${toAdd.join(", ")}` : toAdd.join(", ");
   }
 
   function applySettings(s) {
@@ -493,7 +573,83 @@ export default function Admin() {
         <button onClick={() => setShowAnalytics((v) => !v)} className="btn btn-secondary">
           {showAnalytics ? "Hide analytics" : "📊 Analytics"}
         </button>
+        <button onClick={() => setShowGroups((v) => !v)} className="btn btn-secondary">
+          {showGroups ? "Hide groups" : "👥 Viewer groups"}
+        </button>
       </div>
+
+      {showGroups && (
+        <div className="panel">
+          <h3 style={{ marginTop: 0 }}>Viewer groups</h3>
+          <p style={styles.hint}>
+            Named lists of emails (e.g. "Team A") you can pick from Bulk Share
+            or a video's Private list instead of retyping recipients. A group
+            grants no access by itself — it only fills in emails.
+          </p>
+
+          {groups.length === 0 && <p style={{ opacity: 0.7 }}>No groups yet.</p>}
+          {groups.map((g) => (
+            <div key={g.id} style={styles.inviteRow}>
+              {editingGroupId === g.id ? (
+                <>
+                  <input
+                    type="text"
+                    value={editingGroupEmails}
+                    onChange={(e) => setEditingGroupEmails(e.target.value)}
+                    className="input"
+                    style={{ flex: 1 }}
+                  />
+                  <button onClick={() => saveEditGroup(g.id)} className="btn btn-primary" style={styles.rowBtn}>
+                    Save
+                  </button>
+                  <button onClick={() => setEditingGroupId(null)} className="btn btn-secondary" style={styles.rowBtn}>
+                    Cancel
+                  </button>
+                </>
+              ) : (
+                <>
+                  <span>
+                    <strong>{g.name}</strong> — {g.emails.length} viewer{g.emails.length !== 1 ? "s" : ""}
+                    <span style={{ opacity: 0.7 }}>{g.emails.length > 0 ? `: ${g.emails.join(", ")}` : ""}</span>
+                  </span>
+                  <button onClick={() => startEditGroup(g)} className="btn btn-secondary" style={styles.rowBtn}>
+                    Edit
+                  </button>
+                  <button onClick={() => removeGroup(g)} className="btn btn-danger" style={styles.rowBtn}>
+                    Delete
+                  </button>
+                </>
+              )}
+            </div>
+          ))}
+
+          <div style={{ marginTop: 16, display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <input
+              type="text"
+              placeholder="group name, e.g. Team A"
+              value={newGroupName}
+              onChange={(e) => setNewGroupName(e.target.value)}
+              className="input"
+              style={{ flex: "1 1 160px" }}
+            />
+            <input
+              type="text"
+              placeholder="emails, comma or space separated"
+              value={newGroupEmails}
+              onChange={(e) => setNewGroupEmails(e.target.value)}
+              className="input"
+              style={{ flex: "2 1 260px" }}
+            />
+            <button
+              onClick={createGroup}
+              disabled={groupSaving || !newGroupName.trim() || !newGroupEmails.trim()}
+              className="btn btn-primary"
+            >
+              {groupSaving ? "Creating..." : "Create group"}
+            </button>
+          </div>
+        </div>
+      )}
 
       {showSettings && (
         <div className="panel">
@@ -654,6 +810,22 @@ export default function Admin() {
             className="input"
             style={{ flex: "1 1 220px", width: "auto" }}
           />
+          {groups.length > 0 && (
+            <select
+              value={bulkGroupPick}
+              onChange={(e) => {
+                setBulkEmail((prev) => mergeGroupIntoEmails(prev, e.target.value));
+                setBulkGroupPick("");
+              }}
+            >
+              <option value="">+ Add group...</option>
+              {groups.map((g) => (
+                <option key={g.id} value={g.id}>
+                  {g.name} ({g.emails.length})
+                </option>
+              ))}
+            </select>
+          )}
           <label style={{ whiteSpace: "nowrap" }}>
             Valid for (hrs):{" "}
             <input
@@ -797,13 +969,32 @@ export default function Admin() {
               </div>
             )}
 
-            <input
-              type="text"
-              placeholder="add emails, comma or space separated"
-              value={inviteEmail}
-              onChange={(e) => setInviteEmail(e.target.value)}
-              className="input"
-            />
+            <div style={{ display: "flex", gap: 8 }}>
+              <input
+                type="text"
+                placeholder="add emails, comma or space separated"
+                value={inviteEmail}
+                onChange={(e) => setInviteEmail(e.target.value)}
+                className="input"
+                style={{ flex: 1 }}
+              />
+              {groups.length > 0 && (
+                <select
+                  value={inviteGroupPick}
+                  onChange={(e) => {
+                    setInviteEmail((prev) => mergeGroupIntoEmails(prev, e.target.value));
+                    setInviteGroupPick("");
+                  }}
+                >
+                  <option value="">+ Add group...</option>
+                  {groups.map((g) => (
+                    <option key={g.id} value={g.id}>
+                      {g.name} ({g.emails.length})
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
             <div style={{ marginTop: 12 }}>
               <label style={styles.fieldLabel}>Access valid for (hours)</label>
               <input
