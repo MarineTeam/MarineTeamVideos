@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 export default function Admin() {
   const [videos, setVideos] = useState([]);
+  const [collections, setCollections] = useState([]);
   const [shares, setShares] = useState([]);
   const [loading, setLoading] = useState(true);
   const [shareForVideo, setShareForVideo] = useState(null);
@@ -92,10 +93,22 @@ export default function Admin() {
       fetch("/api/groups").then((r) => r.json()).catch(() => ({})),
     ]);
     setVideos(vRes.videos || []);
+    setCollections(vRes.collections || []);
     setShares(sRes.shares || []);
     if (setRes && setRes.settings) applySettings(setRes.settings);
     setGroups((gRes && gRes.groups) || []);
     setLoading(false);
+  }
+
+  // Adds every video in a Bunny collection to the current selection, so
+  // "share this whole collection" is just a shortcut into the same
+  // Bulk Share bar/flow used for a hand-picked set of videos.
+  function selectCollection(collectionId) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      videos.filter((v) => v.collectionId === collectionId).forEach((v) => next.add(v.id));
+      return next;
+    });
   }
 
   async function createGroup() {
@@ -854,6 +867,23 @@ export default function Admin() {
           <button onClick={() => setSelected(new Set())} className="btn btn-secondary">
             Clear
           </button>
+        </div>
+      )}
+
+      {collections.filter((c) => c.videoCount > 0).length > 0 && (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
+          {collections
+            .filter((c) => c.videoCount > 0)
+            .map((c) => (
+              <button
+                key={c.id}
+                onClick={() => selectCollection(c.id)}
+                className="btn btn-secondary"
+                title={`Select all ${c.videoCount} video${c.videoCount !== 1 ? "s" : ""} in "${c.name}"`}
+              >
+                📁 {c.name} ({c.videoCount})
+              </button>
+            ))}
         </div>
       )}
 
