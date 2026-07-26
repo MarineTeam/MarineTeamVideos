@@ -63,6 +63,7 @@ export default function Admin() {
   const [groupSaving, setGroupSaving] = useState(false);
   const [editingGroupId, setEditingGroupId] = useState(null);
   const [editingGroupEmails, setEditingGroupEmails] = useState("");
+  const [shareGroupPick, setShareGroupPick] = useState("");
   const [bulkGroupPick, setBulkGroupPick] = useState("");
   const [inviteGroupPick, setInviteGroupPick] = useState("");
 
@@ -930,14 +931,34 @@ export default function Admin() {
         <div className="modal-overlay" onClick={() => setShareForVideo(null)}>
           <div className="modal-card" onClick={(e) => e.stopPropagation()}>
             <h3 style={{ marginTop: 0 }}>Share "{shareForVideo.title}"</h3>
-            <input
-              type="email"
-              placeholder="recipient@email.com"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className="input"
-              autoFocus
-            />
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <input
+                type="text"
+                placeholder="recipient@email.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="input"
+                style={{ flex: "1 1 180px", minWidth: 0 }}
+                autoFocus
+              />
+              {groups.length > 0 && (
+                <select
+                  value={shareGroupPick}
+                  onChange={(e) => {
+                    setEmail((prev) => mergeGroupIntoEmails(prev, e.target.value));
+                    setShareGroupPick("");
+                  }}
+                  style={{ flex: "0 0 auto", width: "auto" }}
+                >
+                  <option value="">+ Add group...</option>
+                  {groups.map((g) => (
+                    <option key={g.id} value={g.id}>
+                      {g.name} ({g.emails.length})
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
             <div style={{ marginTop: 12 }}>
               <label style={styles.fieldLabel}>Link valid for (hours)</label>
               <input
