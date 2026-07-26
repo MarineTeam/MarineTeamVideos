@@ -877,6 +877,7 @@ export default function Admin() {
             <th></th>
             <th>Video</th>
             <th>Email</th>
+            <th>Source</th>
             <th>Link</th>
             <th>Status</th>
             <th>Views</th>
@@ -914,6 +915,25 @@ export default function Admin() {
                   )}
                 </td>
                 <td>{s.email}</td>
+                <td>
+                  {s.source === "invite" ? (
+                    <span
+                      className="status-pill"
+                      style={{ background: "#e6f4ea", color: "#1a7f37" }}
+                      title="Added via the Private list for this video"
+                    >
+                      Private list
+                    </span>
+                  ) : (
+                    <span
+                      className="status-pill"
+                      style={{ background: "#eaeef2", color: "#57606a" }}
+                      title="Created via Share / Bulk Share"
+                    >
+                      Share
+                    </span>
+                  )}
+                </td>
                 <td>
                   <a href={`/watch/${s.token}`} target="_blank" rel="noreferrer" style={{ fontSize: 13, wordBreak: "break-all" }}>
                     /watch/{s.token}
