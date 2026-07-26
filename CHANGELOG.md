@@ -2,8 +2,11 @@
 
 Notable changes to this project, newest first. Grouped by date, since most
 days below were their own batch of work rather than a discrete release.
-Six version tags mark points release notes were cut from this history:
+Seven version tags mark points release notes were cut from this history:
 
+- **v1.6.0** — named viewer groups for Bulk Share and the Private list,
+  per-collection sharing from the admin grid, and a fix for a layout bug
+  that made the recipient email box unusable once a group existed.
 - **v1.5.0** — a per-video private access list (YouTube-style invite list)
   with an optional notify-by-email toggle, an admin geo bypass list,
   index-set-backed listings/lookups (replacing full keyspace scans), and
@@ -21,7 +24,7 @@ Six version tags mark points release notes were cut from this history:
   their bulk forms).
 - **v1.0.0** — everything at and before 2026-07-06.
 
-## 2026-07-26
+## v1.6.0 — 2026-07-26
 
 ### Added
 - **Named viewer groups.** Labelled, admin-editable lists of emails (e.g.
@@ -47,6 +50,19 @@ Six version tags mark points release notes were cut from this history:
   one adds every video in that collection to the current selection, which
   feeds directly into the existing Bulk Share bar — no separate sharing
   path, just a shortcut into the one that already exists.
+
+### Fixed
+- **Group-picker dropdown crushing the recipient email input.** The bare
+  `<select>` for "+ Add group..." (Bulk Share bar and Private list modal)
+  had no explicit width, so it inherited the global `select { width: 100% }`
+  rule and competed with the adjacent email `<input>` for space in an
+  unwrapped flex row — squeezing the input down to a near-invisible sliver
+  that looked like a stray checkbox, and making it impossible to type
+  emails once a group existed. The dropdown resetting to "+ Add group..."
+  after each pick is intentional (a one-shot "add this group's emails"
+  action, not a persistent selection) — only the crushed input was a bug.
+  Fixed by giving the dropdown a fixed auto width and the input a real
+  minimum width so both stay usable side by side.
 
 ## v1.5.0 — 2026-07-25
 
