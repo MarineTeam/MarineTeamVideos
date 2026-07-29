@@ -2,8 +2,10 @@
 
 Notable changes to this project, newest first. Grouped by date, since most
 days below were their own batch of work rather than a discrete release.
-Seven version tags mark points release notes were cut from this history:
+Eight version tags mark points release notes were cut from this history:
 
+- **v1.7.0** — the viewer group picker from Bulk Share and the Private list
+  extended to the single-video Share modal.
 - **v1.6.0** — named viewer groups for Bulk Share and the Private list,
   per-collection sharing from the admin grid, and a fix for a layout bug
   that made the recipient email box unusable once a group existed.
@@ -23,6 +25,15 @@ Seven version tags mark points release notes were cut from this history:
   the email gate, bundle pages and consolidation, resend/extend/revoke and
   their bulk forms).
 - **v1.0.0** — everything at and before 2026-07-06.
+
+## v1.7.0 — 2026-07-29
+
+### Added
+- **Viewer group picker in the single-video Share modal.** The
+  "+ Add group..." picker already existed in Bulk Share and the Private
+  list; the regular per-video Share button lacked it, forcing recipients
+  in a named group to be retyped one at a time. Reuses the existing
+  `mergeGroupIntoEmails` helper and the same email input — no API changes.
 
 ## v1.6.0 — 2026-07-26
 
