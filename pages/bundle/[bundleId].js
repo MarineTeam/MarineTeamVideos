@@ -4,8 +4,10 @@ import { signGrant, verifyGrant } from "../../lib/gate";
 import { getBundleMembers } from "../../lib/bundles";
 import { getSettings } from "../../lib/settings";
 import { isGeoAllowed, recipientGeoWhitelist } from "../../lib/geo";
+import { runWithMonitor, getMonitorSnapshot } from "../../lib/monitor";
+import QueryMonitorBar from "../../components/QueryMonitorBar";
 
-export default function BundlePage({ status, reason, bundleId, items, notice }) {
+export default function BundlePage({ status, reason, bundleId, items, notice, monitor }) {
   if (status === "invalid") {
     return (
       <div className="recipient-page">
@@ -13,6 +15,7 @@ export default function BundlePage({ status, reason, bundleId, items, notice }) 
           <h2 style={{ marginTop: 0 }}>This link isn't available</h2>
           <p style={styles.muted}>{reason}</p>
         </div>
+        <QueryMonitorBar data={monitor} />
       </div>
     );
   }
@@ -36,11 +39,17 @@ export default function BundlePage({ status, reason, bundleId, items, notice }) 
             ))}
           </ul>
         </div>
+        <QueryMonitorBar data={monitor} />
       </div>
     );
   }
 
-  return <BundleEmailGate bundleId={bundleId} notice={notice} />;
+  return (
+    <>
+      <BundleEmailGate bundleId={bundleId} notice={notice} />
+      <QueryMonitorBar data={monitor} />
+    </>
+  );
 }
 
 function BundleEmailGate({ bundleId, notice }) {
@@ -136,7 +145,18 @@ function parseCookies(header) {
   return out;
 }
 
-export async function getServerSideProps({ params, query, req, res }) {
+export async function getServerSideProps(ctx) {
+  return runWithMonitor(async () => {
+    const result = await bundleProps(ctx);
+    if (result.props) {
+      const snapshot = getMonitorSnapshot();
+      if (snapshot) result.props.monitor = snapshot;
+    }
+    return result;
+  });
+}
+
+async function bundleProps({ params, query, req, res }) {
   const { bundleId } = params;
   const bundle = await kvGet(`bunnybundle:${bundleId}`);
 

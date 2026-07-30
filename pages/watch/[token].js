@@ -4,6 +4,8 @@ import { generateEmbedUrl } from "../../lib/bunny";
 import { signGrant, verifyGrant } from "../../lib/gate";
 import { getSettings, getVideoWatermark, resolveWatermark } from "../../lib/settings";
 import { isGeoAllowed, recipientGeoWhitelist } from "../../lib/geo";
+import { runWithMonitor, getMonitorSnapshot } from "../../lib/monitor";
+import QueryMonitorBar from "../../components/QueryMonitorBar";
 
 export default function WatchPage({
   status,
@@ -16,6 +18,7 @@ export default function WatchPage({
   watermarkText,
   resumeSec,
   durationSec,
+  monitor,
 }) {
   if (status === "invalid") {
     return (
@@ -24,25 +27,34 @@ export default function WatchPage({
           <h2 style={{ marginTop: 0 }}>This link isn't available</h2>
           <p style={styles.muted}>{reason}</p>
         </div>
+        <QueryMonitorBar data={monitor} />
       </div>
     );
   }
 
   if (status === "authorized") {
     return (
-      <Player
-        embedUrl={embedUrl}
-        title={title}
-        token={token}
-        trackAuth={trackAuth}
-        watermarkText={watermarkText}
-        resumeSec={resumeSec}
-        durationSec={durationSec}
-      />
+      <>
+        <Player
+          embedUrl={embedUrl}
+          title={title}
+          token={token}
+          trackAuth={trackAuth}
+          watermarkText={watermarkText}
+          resumeSec={resumeSec}
+          durationSec={durationSec}
+        />
+        <QueryMonitorBar data={monitor} />
+      </>
     );
   }
 
-  return <EmailGate token={token} title={title} notice={notice} />;
+  return (
+    <>
+      <EmailGate token={token} title={title} notice={notice} />
+      <QueryMonitorBar data={monitor} />
+    </>
+  );
 }
 
 function formatTime(sec) {
@@ -323,7 +335,18 @@ function parseCookies(header) {
   return out;
 }
 
-export async function getServerSideProps({ params, query, req, res }) {
+export async function getServerSideProps(ctx) {
+  return runWithMonitor(async () => {
+    const result = await watchProps(ctx);
+    if (result.props) {
+      const snapshot = getMonitorSnapshot();
+      if (snapshot) result.props.monitor = snapshot;
+    }
+    return result;
+  });
+}
+
+async function watchProps({ params, query, req, res }) {
   const { token } = params;
   const record = await kvGet(`bunnyshare:${token}`);
 

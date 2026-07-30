@@ -1,6 +1,7 @@
 import { baseUrl, parseEmails } from "../../lib/shares";
 import { addInvitees, getInviteWithStatus } from "../../lib/invites";
 import { resolveGroupEmails } from "../../lib/groups";
+import { withApiMonitor } from "../../lib/withMonitor";
 
 // Admin-only (covered by the default middleware matcher, same as /api/share).
 // GET  ?videoId=<id>   -> current invite list for one video, with live status.
@@ -10,7 +11,7 @@ import { resolveGroupEmails } from "../../lib/groups";
 //      record);
 //      unless notify is explicitly false, each new addition also gets the
 //      usual notification email. Emails already on the list are untouched.
-export default async function handler(req, res) {
+async function handler(req, res) {
   try {
     if (req.method === "GET") {
       const { videoId } = req.query;
@@ -52,3 +53,5 @@ export default async function handler(req, res) {
     res.status(500).json({ error: err.message });
   }
 }
+
+export default withApiMonitor(handler);

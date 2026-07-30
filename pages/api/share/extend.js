@@ -1,5 +1,6 @@
 import { kvGet, kvSet } from "../../../lib/kv";
 import { extendBundleForToken } from "../../../lib/bundles";
+import { withApiMonitor } from "../../../lib/withMonitor";
 
 // Admin-only (covered by the default middleware matcher). Extends a share's
 // expiresAt instead of the only prior option — revoke + re-share, which
@@ -31,7 +32,7 @@ function statusCodeFor(error) {
   return 400;
 }
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).end();
   try {
     const { token, hours } = req.body || {};
@@ -48,3 +49,5 @@ export default async function handler(req, res) {
     res.status(500).json({ error: err.message });
   }
 }
+
+export default withApiMonitor(handler);

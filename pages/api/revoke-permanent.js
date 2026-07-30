@@ -1,5 +1,6 @@
 import { kvGet, kvDel, kvSrem } from "../../lib/kv";
 import { SHARE_INDEX_KEY } from "../../lib/shares";
+import { withApiMonitor } from "../../lib/withMonitor";
 
 // Admin-only (covered by the default middleware matcher). Irreversibly
 // deletes a share record — unlike Revoke (a reversible flag flip; see
@@ -25,7 +26,7 @@ export async function permanentlyDeleteOne(token) {
   return { token, ok: true };
 }
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).end();
   try {
     const { token } = req.body || {};
@@ -42,3 +43,5 @@ export default async function handler(req, res) {
     res.status(500).json({ error: err.message });
   }
 }
+
+export default withApiMonitor(handler);

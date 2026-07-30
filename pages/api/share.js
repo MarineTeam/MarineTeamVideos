@@ -1,8 +1,9 @@
 import { createShareRecord, setEmailFailed, baseUrl, parseEmails } from "../../lib/shares";
 import { findOrExtendBundle, getBundleItems } from "../../lib/bundles";
 import { sendShareEmail, sendBulkShareEmail } from "../../lib/mailer";
+import { withApiMonitor } from "../../lib/withMonitor";
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).end();
 
   try {
@@ -75,3 +76,5 @@ export default async function handler(req, res) {
     res.status(500).json({ error: err.message });
   }
 }
+
+export default withApiMonitor(handler);

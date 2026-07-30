@@ -2,6 +2,7 @@ import { kvGet, kvSet } from "../../../lib/kv";
 import { normalizeEmail } from "../../../lib/gate";
 import { inviteKey } from "../../../lib/invites";
 import { revokeOne } from "../revoke";
+import { withApiMonitor } from "../../../lib/withMonitor";
 
 // Admin-only (covered by the default middleware matcher). Removes one email
 // from a video's invite list AND revokes their underlying share (same
@@ -9,7 +10,7 @@ import { revokeOne } from "../revoke";
 // never deleted, only flagged). Re-adding the same email later via
 // /api/video-invite is treated as a brand new invite: a fresh token and a
 // fresh email, since they no longer appear in the list's membership.
-export default async function handler(req, res) {
+async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).end();
   try {
     const { videoId, email } = req.body || {};
@@ -31,3 +32,5 @@ export default async function handler(req, res) {
     res.status(500).json({ error: err.message });
   }
 }
+
+export default withApiMonitor(handler);

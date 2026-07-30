@@ -1,9 +1,10 @@
 import { getGroup, updateGroup, deleteGroup } from "../../../lib/groups";
+import { withApiMonitor } from "../../../lib/withMonitor";
 
 // Admin-only (default middleware matcher). GET one group; PUT updates
 // name/emails; DELETE removes it. Deleting a group only removes the label —
 // it never touches any share/invite already created from its members.
-export default async function handler(req, res) {
+async function handler(req, res) {
   const { groupId } = req.query;
 
   try {
@@ -29,3 +30,5 @@ export default async function handler(req, res) {
     res.status(500).json({ error: err.message });
   }
 }
+
+export default withApiMonitor(handler);
