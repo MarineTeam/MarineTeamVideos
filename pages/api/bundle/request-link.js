@@ -2,6 +2,7 @@ import { kvGet, kvSetEx } from "../../../lib/kv";
 import { signGrant, normalizeEmail } from "../../../lib/gate";
 import { sendBundleMagicLinkEmail } from "../../../lib/mailer";
 import { baseUrl } from "../../../lib/shares";
+import { withApiMonitor } from "../../../lib/withMonitor";
 
 // Same TTL/throttle constants and same uniform-response reasoning as
 // /api/watch/request-link.js — see that file for why. This is the bundle
@@ -10,7 +11,7 @@ import { baseUrl } from "../../../lib/shares";
 const MAGIC_LINK_TTL_MS = 15 * 60 * 1000; // 15 minutes
 const THROTTLE_SECONDS = 30;
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).end();
 
   const genericOk = () =>
@@ -65,3 +66,5 @@ export default async function handler(req, res) {
     return genericOk();
   }
 }
+
+export default withApiMonitor(handler);

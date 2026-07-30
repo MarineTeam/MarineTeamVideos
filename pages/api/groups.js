@@ -1,8 +1,9 @@
 import { listGroups, createGroup } from "../../lib/groups";
+import { withApiMonitor } from "../../lib/withMonitor";
 
 // Admin-only (default middleware matcher). GET lists all viewer groups;
 // POST creates a new one.
-export default async function handler(req, res) {
+async function handler(req, res) {
   try {
     if (req.method === "GET") {
       const groups = await listGroups();
@@ -20,3 +21,5 @@ export default async function handler(req, res) {
     res.status(500).json({ error: err.message });
   }
 }
+
+export default withApiMonitor(handler);

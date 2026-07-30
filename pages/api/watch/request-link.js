@@ -2,6 +2,7 @@ import { kvGet, kvSetEx } from "../../../lib/kv";
 import { signGrant, normalizeEmail } from "../../../lib/gate";
 import { sendMagicLinkEmail } from "../../../lib/mailer";
 import { baseUrl } from "../../../lib/shares";
+import { withApiMonitor } from "../../../lib/withMonitor";
 
 // How long the emailed magic link stays valid before the recipient must
 // request a fresh one.
@@ -14,7 +15,7 @@ const THROTTLE_SECONDS = 30;
 // matches the recipient the share was created for. The response is intentionally
 // identical whether or not the email matched, so the page can't be used to probe
 // which address a link belongs to.
-export default async function handler(req, res) {
+async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).end();
 
   const genericOk = () =>
@@ -81,3 +82,5 @@ export default async function handler(req, res) {
     return genericOk();
   }
 }
+
+export default withApiMonitor(handler);

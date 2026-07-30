@@ -1,11 +1,12 @@
 import { baseUrl } from "../../../lib/shares";
 import { resendOne } from "./resend";
+import { withApiMonitor } from "../../../lib/withMonitor";
 
 // Admin-only (covered by the default middleware matcher). Resends
 // notifications for multiple existing shares in one call — never fails the
 // whole batch; each token's outcome is reported independently, same as
 // /api/share-bulk's per-recipient failures array.
-export default async function handler(req, res) {
+async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).end();
   try {
     const { tokens } = req.body || {};
@@ -25,3 +26,5 @@ export default async function handler(req, res) {
     res.status(500).json({ error: err.message });
   }
 }
+
+export default withApiMonitor(handler);

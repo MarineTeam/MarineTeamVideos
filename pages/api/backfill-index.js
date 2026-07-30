@@ -1,6 +1,7 @@
 import { kvKeys, kvSadd } from "../../lib/kv";
 import { SHARE_INDEX_KEY } from "../../lib/shares";
 import { BUNDLE_INDEX_KEY } from "../../lib/bundles";
+import { withApiMonitor } from "../../lib/withMonitor";
 
 // Admin-only, one-time migration (idempotent — SADD naturally dedupes, so
 // it's safe to re-run). Populates the bunnyshare-index / bunnybundle-index
@@ -17,7 +18,7 @@ import { BUNDLE_INDEX_KEY } from "../../lib/bundles";
 // never depended on the index, only the admin listing and cleanup do) but
 // silently stop appearing in the admin shares table and cleanup sweeps,
 // since both now only look at the index rather than scanning everything.
-export default async function handler(req, res) {
+async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).end();
   try {
     const shareKeys = await kvKeys("bunnyshare:*");
@@ -37,3 +38,5 @@ export default async function handler(req, res) {
     res.status(500).json({ error: err.message });
   }
 }
+
+export default withApiMonitor(handler);

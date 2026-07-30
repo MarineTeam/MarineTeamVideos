@@ -1,10 +1,11 @@
 import { getSettings, saveSettings } from "../../lib/settings";
 import { adminGeoWhitelist, adminGeoBypassEmails, recipientGeoWhitelist } from "../../lib/geo";
+import { withApiMonitor } from "../../lib/withMonitor";
 
 // Admin-only. Not under /api/watch/ or /api/bundle/, so the middleware matcher
 // puts it behind Basic Auth automatically (invariant 7) — no per-route check
 // needed here. GET reads current settings; POST saves a patch.
-export default async function handler(req, res) {
+async function handler(req, res) {
   try {
     if (req.method === "GET") {
       const settings = await getSettings();
@@ -31,3 +32,5 @@ export default async function handler(req, res) {
     res.status(500).json({ error: err.message });
   }
 }
+
+export default withApiMonitor(handler);

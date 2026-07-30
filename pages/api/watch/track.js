@@ -1,5 +1,6 @@
 import { kvGet, kvSet } from "../../../lib/kv";
 import { verifyGrant } from "../../../lib/gate";
+import { withApiMonitor } from "../../../lib/withMonitor";
 
 // PUBLIC (under /api/watch/*, excluded from admin Basic Auth). Records real
 // playback events reported by the Bunny embed player on the /watch page.
@@ -7,7 +8,7 @@ import { verifyGrant } from "../../../lib/gate";
 // authorized page render passes to the client), so counters can't be
 // inflated by anyone who merely knows a token. All written fields are
 // additive to the share record.
-export default async function handler(req, res) {
+async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).end();
 
   try {
@@ -59,3 +60,5 @@ export default async function handler(req, res) {
     res.status(500).json({ error: err.message });
   }
 }
+
+export default withApiMonitor(handler);

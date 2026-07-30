@@ -1,8 +1,9 @@
 import { kvGet, kvSmembers } from "../../lib/kv";
 import { baseUrl, SHARE_INDEX_KEY } from "../../lib/shares";
 import { bundleLinksForTokens } from "../../lib/bundles";
+import { withApiMonitor } from "../../lib/withMonitor";
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   if (req.method !== "GET") return res.status(405).end();
   try {
     // Reads the index set (SMEMBERS) rather than KEYS-scanning the whole
@@ -24,3 +25,5 @@ export default async function handler(req, res) {
     res.status(500).json({ error: err.message });
   }
 }
+
+export default withApiMonitor(handler);

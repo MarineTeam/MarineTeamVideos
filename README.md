@@ -63,6 +63,7 @@ See [FEATURES.md](./FEATURES.md) for the full feature list and [CHANGELOG.md](./
 | `RESEND_API_KEY` / `RESEND_FROM` | Preferred email delivery: when `RESEND_API_KEY` is set, emails are sent via the [Resend](https://resend.com/) HTTP API. `RESEND_FROM` is a verified sender on your Resend domain. |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | Fallback SMTP settings, used only when `RESEND_API_KEY` is not set. Works with any SMTP provider (Brevo, SMTP2GO, Gmail app password, etc.). |
 | `KV_REST_API_URL` / `KV_REST_API_TOKEN` | Upstash Redis REST API credentials for storing share records |
+| `QUERY_MONITOR` | Optional. Set to `1` to turn on the built-in query/performance monitor (like Query Monitor / wp-memory-usage for WordPress): a bottom-corner overlay on `/watch` and `/bundle` pages showing KV query count, per-query timing, total request time, and memory, plus a badge on the admin page indicating it's enabled and tracking that page's own API calls. Off by default. Purely an env var (not a Settings field) so it can't be flipped on in production by mistake; everything shown is computed fresh per request, so a reload always shows that reload's numbers, never a stale first-load snapshot. |
 
 ## API routes
 
@@ -91,6 +92,7 @@ See [FEATURES.md](./FEATURES.md) for the full feature list and [CHANGELOG.md](./
 | `/api/watch/request-link` | POST | Public: verify a recipient's email against a share and email them a one-time magic link (excluded from admin Basic Auth) |
 | `/api/watch/track` | POST | Public: record playback events (play/progress/ended) reported by the player; requires a token-bound tracking grant issued by the authorized watch page |
 | `/api/bundle/request-link` | POST | Public: verify a recipient's email against their bundle and email them a one-time magic link that unlocks every video in it |
+| `/api/monitor-status` | GET | Reports whether `QUERY_MONITOR` is on, for the admin page's badge |
 
 `/watch/[token]` and `/bundle/[bundleId]` are the two public, recipient-facing pages — neither is behind Basic Auth. Every other route is protected by the Basic Auth middleware.
 

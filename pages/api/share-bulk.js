@@ -2,12 +2,13 @@ import { createShareRecord, setEmailFailed, baseUrl, parseEmails } from "../../l
 import { findOrExtendBundle, getBundleItems } from "../../lib/bundles";
 import { sendBulkShareEmail } from "../../lib/mailer";
 import { resolveGroupEmails } from "../../lib/groups";
+import { withApiMonitor } from "../../lib/withMonitor";
 
 // Creates a separate share (distinct token + link) for every recipient x video
 // pair and emails each recipient one message listing only THEIR links. Every
 // pair gets its own record on purpose: access is revocable per person per
 // video, and views are tracked per person (see /watch/[token]).
-export default async function handler(req, res) {
+async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).end();
 
   try {
@@ -96,3 +97,5 @@ export default async function handler(req, res) {
     res.status(500).json({ error: err.message });
   }
 }
+
+export default withApiMonitor(handler);

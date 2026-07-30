@@ -1,10 +1,11 @@
 import { revokeOne } from "./revoke";
+import { withApiMonitor } from "../../lib/withMonitor";
 
 // Admin-only (covered by the default middleware matcher). Revokes multiple
 // shares in one call — never fails the whole batch; each token's outcome is
 // reported independently, same pattern as /api/share/resend-bulk and
 // /api/share/extend-bulk.
-export default async function handler(req, res) {
+async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).end();
   try {
     const { tokens } = req.body || {};
@@ -23,3 +24,5 @@ export default async function handler(req, res) {
     res.status(500).json({ error: err.message });
   }
 }
+
+export default withApiMonitor(handler);

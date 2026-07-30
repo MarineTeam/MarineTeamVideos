@@ -1,6 +1,7 @@
 import { kvGet } from "../../../lib/kv";
 import { setEmailFailed, baseUrl } from "../../../lib/shares";
 import { sendShareEmail } from "../../../lib/mailer";
+import { withApiMonitor } from "../../../lib/withMonitor";
 
 // Admin-only (covered by the default middleware matcher, unlike /api/watch/*).
 // Re-sends the notification for one existing share record — usable any time,
@@ -37,7 +38,7 @@ function statusCodeFor(error) {
   return 502;
 }
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).end();
   try {
     const { token } = req.body || {};
@@ -52,3 +53,5 @@ export default async function handler(req, res) {
     res.status(500).json({ error: err.message });
   }
 }
+
+export default withApiMonitor(handler);

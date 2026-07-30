@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import QueryMonitorPanel from "../components/QueryMonitorPanel";
 
 export default function Admin() {
   const [videos, setVideos] = useState([]);
@@ -568,11 +569,18 @@ export default function Admin() {
     return "Active";
   }
 
-  if (loading) return <p style={{ padding: 20 }}>Loading...</p>;
+  if (loading)
+    return (
+      <>
+        <p style={{ padding: 20 }}>Loading...</p>
+        <QueryMonitorPanel />
+      </>
+    );
 
   const analytics = computeAnalytics(shares);
 
   return (
+    <>
     <div style={styles.wrap}>
       <header style={styles.header}>
         <h1 style={styles.h1}>Video Library</h1>
@@ -1239,6 +1247,8 @@ export default function Admin() {
       </table>
       </div>
     </div>
+    <QueryMonitorPanel />
+    </>
   );
 }
 

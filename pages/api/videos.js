@@ -1,6 +1,7 @@
 import { listVideos, listCollections } from "../../lib/bunny";
+import { withApiMonitor } from "../../lib/withMonitor";
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   if (req.method !== "GET") return res.status(405).end();
   try {
     // Videos are the load-bearing part of this response — if collections
@@ -18,3 +19,5 @@ export default async function handler(req, res) {
     res.status(500).json({ error: err.message });
   }
 }
+
+export default withApiMonitor(handler);
