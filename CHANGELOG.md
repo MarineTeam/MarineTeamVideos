@@ -2,8 +2,11 @@
 
 Notable changes to this project, newest first. Grouped by date, since most
 days below were their own batch of work rather than a discrete release.
-Eight version tags mark points release notes were cut from this history:
+Nine version tags mark points release notes were cut from this history:
 
+- **v1.8.0** — an opt-in query monitor / performance overlay for `/watch`,
+  `/bundle`, and the admin page, toggled purely by the `QUERY_MONITOR` env
+  var.
 - **v1.7.0** — the viewer group picker from Bulk Share and the Private list
   extended to the single-video Share modal.
 - **v1.6.0** — named viewer groups for Bulk Share and the Private list,
@@ -26,7 +29,7 @@ Eight version tags mark points release notes were cut from this history:
   their bulk forms).
 - **v1.0.0** — everything at and before 2026-07-06.
 
-## Unreleased — 2026-07-30
+## v1.8.0 — 2026-07-30
 
 ### Added
 - **Query monitor / performance overlay**, toggled purely by the
