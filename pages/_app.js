@@ -1,13 +1,8 @@
-import { useEffect } from "react";
 import "../styles/globals.css";
-import { installFetchMonitor } from "../lib/clientMonitorStore";
+// Side-effect import: installs the fetch monitor patch at module load, before
+// any page's mount effects run. See lib/clientMonitorStore.js.
+import "../lib/clientMonitorStore";
 
 export default function App({ Component, pageProps }) {
-  // No-op unless the server is actually attaching X-Query-Monitor headers
-  // (QUERY_MONITOR on) — see lib/clientMonitorStore.js.
-  useEffect(() => {
-    installFetchMonitor();
-  }, []);
-
   return <Component {...pageProps} />;
 }
