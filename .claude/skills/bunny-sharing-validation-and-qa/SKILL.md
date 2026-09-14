@@ -242,7 +242,26 @@ Next rung, in priority order:
 3. **A real-service pass** — the L2/L3/L4 rungs. Unchanged in priority by
    any of the above; doubles are not services.
 
-**A caution learned building this suite (2026-09-13).** One crypto test
+**Two cautions learned building this suite (2026-09-13), both the same
+class: a test that was green for the wrong reason.** The rule they add up
+to: when a test claims to REJECT something, prove it rejects it. Assert the
+negative case explicitly, in the suite. A check you have not seen fail is a
+check you have not verified.
+
+*Caution two — substring checks are the wrong tool for host claims.* CodeQL
+raised two High "incomplete URL substring sanitization" alerts on the test
+asserting an emailed magic link points at `SITE_URL`. Test scope, so nothing
+in production depended on them — but the assertion really was weak:
+`body.includes("https://videos.test/watch/")` passes for a body containing
+`https://evil.example.com/x?next=https://videos.test/watch/abc`, the exact
+host-header-poisoning shape the test guards against. Now every absolute URL
+in the body is extracted and its PARSED host asserted, with a companion test
+proving the old check passed the poisoned body and the new one does not.
+Take a scanner finding as a prompt to re-read your own assertion, not as a
+verdict to accept or dismiss — Episode 11's ReDoS alert was correctly
+dismissed after a benchmark; this one was correctly acted on after a read.
+
+*Caution one —* One crypto test
 passed for the wrong reason: it "tampered" with a signature by flipping its
 last base64url character. A 32-byte HMAC encodes to 43 characters whose last
 carries only 4 significant bits, so several distinct final characters decode
@@ -282,7 +301,7 @@ was false as of that commit, the ladder gained L0.5, section 4 became a
 record of what shipped plus a ranked next rung, and the batch was added to
 the golden inventory at L0+L0.5 ONLY.
 
-- Tests present, CI still absent: `npm test` (expect 151+ passing);
+- Tests present, CI still absent: `npm test` (expect 152+ passing);
   `ls .github 2>&1` (expect: No such file).
 - Generic message string: `grep -n "sign-in link to it" pages/api/watch/request-link.js`.
 - 401 boundary: `grep -n "matcher" middleware.js` (expect `/api/((?!watch/|bundle/).*)`).

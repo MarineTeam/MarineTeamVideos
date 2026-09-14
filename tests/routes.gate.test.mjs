@@ -41,6 +41,25 @@ async function makeShare(over = {}) {
   return record;
 }
 
+// Every absolute http(s) URL in a message body, as parsed hosts. Used
+// instead of substring checks so a host assertion actually tests the host.
+function urlHostsIn(body) {
+  const matches = String(body).match(/https?:\/\/[^\s<>"')]+/g) || [];
+  return matches.map((raw) => {
+    try {
+      return new URL(raw).host;
+    } catch {
+      return "<unparseable>";
+    }
+  });
+}
+
+function linkIn(body) {
+  const m = String(body).match(/https?:\/\/[^\s<>"')]+/);
+  assert.ok(m, `no link in body: ${body}`);
+  return m[0];
+}
+
 function grantFromMail(h) {
   const body = h.lastMail().text;
   const m = body.match(/grant=([^\s&]+)/);
@@ -161,6 +180,22 @@ test("the emailed grant is bound to its own share and short-lived", async () => 
   assert.ok(remainingMs > 0 && remainingMs <= 15 * 60 * 1000, `expected a <=15min TTL, got ${remainingMs}ms`);
 });
 
+test("the host assertion above actually bites", () => {
+  // Guard the guard. The previous version of the SITE_URL test used
+  // substring containment, which PASSES on this body while the link it
+  // describes points at an attacker's host — so the test would have been
+  // green while the property it claimed was violated. Assert that the
+  // replacement detects exactly that, or the next person has no way to know
+  // the check is real. (Same lesson as the base64url tamper case: a test is
+  // only as good as the thing it actually distinguishes.)
+  const poisoned = "Watch here:\nhttps://evil.example.com/x?next=https://videos.test/watch/abc";
+  assert.ok(poisoned.includes("https://videos.test/watch/"), "the OLD check would pass this");
+  assert.deepEqual(urlHostsIn(poisoned), ["evil.example.com"], "the NEW check catches it");
+
+  const clean = "Watch here:\nhttps://videos.test/watch/abc?grant=xyz";
+  assert.deepEqual(urlHostsIn(clean), ["videos.test"]);
+});
+
 test("the magic link points at this app's SITE_URL, never a request Host", async () => {
   h.reset();
   const rec = await makeShare();
@@ -169,7 +204,21 @@ test("the magic link points at this app's SITE_URL, never a request Host", async
     body: { token: rec.token, email: "viewer@example.com" },
     headers: { "x-forwarded-for": "192.0.2.13", host: "evil.example.com" },
   });
-  const body = h.lastMail().text;
-  assert.ok(body.includes("https://videos.test/watch/"), "link must be built from SITE_URL");
-  assert.ok(!body.includes("evil.example.com"), "a spoofed Host must never reach an emailed link");
+  // Assert on the PARSED origin of every link in the body, not on substring
+  // containment. Containment is the wrong tool for a host claim and would
+  // pass for a body carrying `https://evil.example.com/x?next=https://videos.test/watch/abc`
+  // — which is the exact host-header-poisoning shape this test exists to
+  // guard against, so a substring check here could pass while the property
+  // it claims to prove is violated. (CodeQL flagged the earlier version:
+  // "incomplete URL substring sanitization". It was right about the
+  // weakness even though this is test code.)
+  const hosts = urlHostsIn(h.lastMail().text);
+  assert.ok(hosts.length > 0, "the email must actually contain a link");
+  for (const host of hosts) {
+    assert.equal(host, "videos.test", `every emailed link must point at SITE_URL, found ${host}`);
+  }
+
+  const link = new URL(linkIn(h.lastMail().text));
+  assert.equal(link.origin, "https://videos.test");
+  assert.equal(link.pathname, `/watch/${rec.token}`);
 });

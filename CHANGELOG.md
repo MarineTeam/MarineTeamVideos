@@ -266,11 +266,30 @@ Nine version tags mark points release notes were cut from this history:
   a listing that always falls back after a successful rebuild is the expected
   failure signature.
 
+### Fixed
+- **Two CodeQL "incomplete URL substring sanitization" alerts on the gate
+  route tests, fixed by strengthening the assertion rather than dismissing
+  the finding.** Both were test-scope, so nothing in production depended on
+  them, but the assertion really was weak for its own subject:
+  `body.includes("https://videos.test/watch/")` passes for a body carrying
+  `https://evil.example.com/x?next=https://videos.test/watch/abc` — the
+  exact host-header-poisoning shape that test exists to guard against, so it
+  could have been green while the property it claimed was violated. Every
+  absolute URL in the body is now extracted and its parsed host asserted,
+  plus the link's origin and path checked exactly.
+
+  A companion test pins that the replacement is real: it asserts the old
+  substring check passes the poisoned body and the new parsed check rejects
+  it. This is the second test in this release found green for the wrong
+  reason, after the base64url tamper case, so the general rule is now
+  recorded in the project skills — when a test claims to reject something,
+  prove it rejects it.
+
 ### Verified
 - `npm run build` clean; all new routes register (`/api/shares/export`,
   `/api/watch/request-access`, `/api/analytics`), `Proxy (Middleware)` still registers with the
   async middleware.
-- `npm test` — 151/151 passing, stable across repeated runs (the base64url
+- `npm test` — 152/152 passing, stable across repeated runs (the base64url
   flake above was found this way). The view-cap round trip is proven end to
   end: a used-up share refused by the real access decision, the cap raised
   through the real route, and the SAME token then passing the gate.

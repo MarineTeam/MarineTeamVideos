@@ -550,6 +550,36 @@ Two things were learned doing it, both worth keeping:
    rather than either skipping the coverage silently or refactoring the
    most security-sensitive page as a side effect of writing tests.
 
+**Second addendum — CodeQL on the new tests, and the same lesson twice.**
+CodeQL raised two High "incomplete URL substring sanitization" alerts
+against `tests/routes.gate.test.mjs`, on the test asserting that an emailed
+magic link points at `SITE_URL` and never at a spoofed request Host. Both
+were test-scope, so no production control depended on them, and the easy
+call was to dismiss them the way Episode 11's ReDoS alert was correctly
+dismissed.
+
+That would have been wrong. Inspecting the assertion rather than the alert
+label: `body.includes("https://videos.test/watch/")` passes for a body
+containing `https://evil.example.com/x?next=https://videos.test/watch/abc`.
+That is precisely the host-header-poisoning shape the test exists to guard
+against — so the guard could have been green while the property it claimed
+to prove was violated. Fixed by extracting every absolute URL from the body
+and asserting on its PARSED host, which is both CodeQL-clean and strictly
+stronger than what it replaced.
+
+A `the host assertion above actually bites` test now pins it: it asserts
+that the OLD substring check passes the poisoned body and the NEW parsed
+check rejects it. Without that, nobody could tell the replacement was real.
+
+**This is the second time in one session that a test was green for the wrong
+reason** — the first was the base64url tamper case earlier in this episode.
+Both had the same shape: an assertion whose *mutation or discrimination was
+not actually what the author believed*. Generalized rule, now also in
+validation-and-qa: when a test claims to reject something, prove it rejects
+it — assert the negative case explicitly, in the suite, rather than trusting
+that the check discriminates. And take a scanner's finding as a prompt to
+re-read your own assertion, not as a verdict to accept or dismiss.
+
 **Status: BUILT, ROUTE-TESTED, NOT CERTIFIED.** No live pass, no deploy,
 and the JSX-bound half of the gate remains unautomated.
 
