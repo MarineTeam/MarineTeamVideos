@@ -33,8 +33,10 @@ export function setEnv(extra = {}) {
 export function installHarness() {
   const store = new Map(); // key -> JSON string
   const sets = new Map(); // key -> Set of members
+  const zsets = new Map(); // key -> Map of member -> score
   const ttls = new Map(); // key -> seconds
   const mail = []; // every message the app tried to send
+  const ops = []; // every KV operation, so tests can assert read COUNTS
   let failMail = false;
   let kvDown = false;
 
@@ -57,6 +59,7 @@ export function installHarness() {
 
     const parts = u.pathname.split("/").filter(Boolean).map(decodeURIComponent);
     const [op, key, value] = parts;
+    ops.push({ op, key });
     let result = null;
 
     switch (op) {
@@ -90,6 +93,35 @@ export function installHarness() {
       case "smembers":
         result = sets.has(key) ? [...sets.get(key)] : [];
         break;
+      // Sorted sets. NOTE: this encodes the SAME assumption about Upstash's
+      // REST path shape that lib/kv.js does, so these tests prove the app's
+      // logic, NOT that the real service accepts these commands. See roadmap
+      // item (m)'s "known risk to check on deploy".
+      case "zadd": {
+        if (!zsets.has(key)) zsets.set(key, new Map());
+        // parts = [op, key, score, member]
+        zsets.get(key).set(parts[3], Number(parts[2]));
+        result = 1;
+        break;
+      }
+      case "zrem":
+        if (zsets.has(key)) zsets.get(key).delete(value);
+        result = 1;
+        break;
+      case "zcard":
+        result = zsets.has(key) ? zsets.get(key).size : 0;
+        break;
+      case "zrange": {
+        const entries = [...(zsets.get(key) || new Map()).entries()].sort(
+          (a, b) => a[1] - b[1] || (a[0] < b[0] ? -1 : 1)
+        );
+        const rev = parts.includes("REV");
+        const ordered = rev ? entries.reverse() : entries;
+        const start = Number(parts[2]);
+        const stop = Number(parts[3]);
+        result = ordered.slice(start, stop < 0 ? undefined : stop + 1).map(([m]) => m);
+        break;
+      }
       default:
         throw new Error(`harness: unhandled KV op "${op}"`);
     }
@@ -109,6 +141,11 @@ export function installHarness() {
     },
     putRecord: (token, rec) => store.set(`bunnyshare:${token}`, JSON.stringify(rec)),
     indexed: () => [...(sets.get("bunnyshare-index") || [])],
+    zsets,
+    ordered: () => [...(zsets.get("bunnyshare-by-created") || new Map()).keys()],
+    ops,
+    countOps: (op) => ops.filter((o) => o.op === op).length,
+    clearOps: () => ops.splice(0, ops.length),
     lastMail: () => mail[mail.length - 1],
     clearMail: () => mail.splice(0, mail.length),
     setMailFailing: (v) => {
@@ -120,8 +157,10 @@ export function installHarness() {
     reset: () => {
       store.clear();
       sets.clear();
+      zsets.clear();
       ttls.clear();
       mail.length = 0;
+      ops.length = 0;
       failMail = false;
       kvDown = false;
     },

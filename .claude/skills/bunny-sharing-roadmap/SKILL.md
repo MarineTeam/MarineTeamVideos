@@ -669,7 +669,7 @@ repo / "you have a result when…". All are CANDIDATES — none is scheduled wor
   doubled (recipient side was never live-verified even under the original
   KV design before this follow-up replaced it).
 
-### (m) Sorted share index so paging cuts KV reads — OPEN (opened 2026-09-13)
+### (m) Sorted share index so paging cuts KV reads — ADOPTED 2026-09-13
 - **Why:** `/api/shares` is now filtered and paged server-side, but
   `loadAllShares()` (lib/shareQuery.js) still does SMEMBERS + one GET per
   token on EVERY call. Paging cut response size and browser render work —
@@ -691,6 +691,96 @@ repo / "you have a result when…". All are CANDIDATES — none is scheduled wor
   issues a bounded number of KV ops that does not grow with the total, and
   `/api/analytics` (which legitimately needs every record) is the only
   remaining full reader.
+
+#### Design decision, written 2026-09-13 BEFORE any code (lifecycle rule 3)
+
+The entry above said the whole design is deciding what FILTERS do once
+paging happens in the store rather than in memory. Four options were
+considered:
+
+- **(A) Page the sorted set, then filter within the page.** REJECTED. A
+  50-row page might yield 3 rows after filtering, "page 2" stops meaning
+  anything, and the admin table's "N of M" line would report numbers that
+  are simply wrong. A listing that lies about how much it is showing is
+  worse than a slow one.
+- **(B) Sorted set for the UNFILTERED default view; keep today's full read
+  for filtered and searched queries.** CHOSEN. The unfiltered newest-first
+  view is what loads on every single admin page open, so it is where the
+  cost actually lives; filtering is the rarer, deliberate act. Filtered
+  queries keep exactly today's behaviour — no regression, no lying counts,
+  no new failure mode — and the common case becomes bounded.
+- **(C) Maintain per-status sorted sets (active / expired / revoked).**
+  REJECTED, and worth recording why so nobody re-proposes it: status is
+  DERIVED and partly time-dependent. A share becomes "expired" because the
+  clock passed, with no write anywhere to hook an index update onto. Such
+  an index could only be kept true by a sweeper, and between sweeps it
+  would be a second source of truth that disagrees with the records —
+  exactly what architecture-contract 2.6 forbids and what
+  `getBundleMembers` was designed to avoid.
+- **(D) Index for substring search on email/title.** OUT OF SCOPE. That is
+  a text-search problem, not an ordering one, and nothing here justifies it.
+
+**Prediction, stated before coding:** an unfiltered `/api/shares?page=1`
+issues a bounded number of KV operations (one range read plus one GET per
+row shown) regardless of how many shares exist, while a filtered or searched
+query issues exactly what it does today. `/api/analytics` remains a full
+reader by design, because a rollup legitimately needs every record.
+
+**Two safety requirements, non-negotiable given the 30ecd7f lesson:**
+1. The new sorted set is ADDITIVE. `bunnyshare-index` keeps its name, its
+   shape and every existing call site. Nothing is renamed or migrated.
+2. The read path MUST fall back to the existing full scan whenever the
+   sorted set is empty or unavailable — which is the state of every
+   deployment that upgrades without running the backfill. A deployment that
+   has not backfilled must show its shares exactly as before, never an
+   empty table.
+
+**Known risk to check on deploy, not resolvable here:** the Upstash REST
+path shape for the sorted-set commands cannot be verified in this
+environment — the tests run against an in-memory double that encodes the
+same assumption the code does, so they would pass whether or not the real
+API agrees. Requirement 2 above is what makes that survivable: if the
+command shape is wrong, the read fails, the fallback engages, and the admin
+table behaves exactly as it does today rather than breaking. Verify against
+a real store before trusting the improvement, and treat a silently-always-
+falling-back listing as the expected failure signature.
+
+#### Outcome
+
+- **What shipped:** `bunnyshare-by-created`, a sorted set scored by
+  `createdAt`, written by `createShareRecord` alongside the existing plain
+  index and removed by both delete paths (`cleanup.js`,
+  `revoke-permanent.js`) in the same breath as the SREM. New kv helpers
+  `kvZadd`/`kvZrem`/`kvZcard`/`kvZrangeRev`. `loadSharePage()`
+  (lib/shareQuery.js) serves the UNFILTERED listing from it;
+  `/api/shares` routes to it only when no status filter and no search term
+  are present, and keeps `loadAllShares` for everything else exactly as
+  before. `/api/backfill-index` (the admin "🔁 Rebuild index" button) now
+  seeds the ordered index too.
+- **Prediction met:** an unfiltered page of 10 out of 60 shares issues ~10
+  record reads rather than 60, asserted by counting store operations in the
+  harness rather than by reasoning — `tests/orderedIndex.test.mjs`.
+- **The fallback is the part that matters, and it is tested three ways:** an
+  index that is absent (a deployment that upgraded without backfilling),
+  one that is shorter than the plain index (a backfill that got half way),
+  and one whose commands are rejected outright (the deploy risk above).
+  All three degrade to the previous full read and still list every share.
+  A listing that is merely slow beats one that is wrong; an empty admin
+  table on upgrade would have been 30ecd7f repeating.
+- **OPERATIONAL OBLIGATION:** an existing deployment must run
+  "🔁 Rebuild index" once to get the fast path. Until it does, everything
+  works exactly as before — no broken links, no missing rows, just the old
+  read cost. This is deliberately a performance opt-in, never a correctness
+  dependency.
+- **Not yet exercised:** the Upstash REST command shape, per the risk note
+  above; and the actual 1,000-share scale the original question asked about
+  (the tests use tens of records to prove the read count is bounded, which
+  is the property that matters, not a load benchmark).
+- **Still true after this:** filtered and searched listings read every
+  record, by design — status is derived and time-dependent, search is a
+  substring match, and indexing either would create the second source of
+  truth option (C) was rejected for. `/api/analytics` also remains a full
+  reader, deliberately.
 
 ### (r) Extract the watch/bundle access decision out of the JSX pages — ADOPTED 2026-09-13 (both halves)
 - **Why:** the single most security-critical decision path in the app — is

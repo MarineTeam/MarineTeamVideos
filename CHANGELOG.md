@@ -236,11 +236,41 @@ Nine version tags mark points release notes were cut from this history:
   No admin-page UI, deliberately. Forensics is rare and investigative, and
   the dashboard is already dense; the runbook documents the curl.
 
+- **A createdAt-ordered share index, so the default admin listing reads one
+  page instead of every record** (roadmap item (m)). New
+  `bunnyshare-by-created` sorted set written alongside the existing index and
+  removed alongside it; `/api/shares` serves the unfiltered listing from it
+  and keeps the previous full read for filtered and searched queries.
+
+  The design question that entry flagged was what filters do once paging
+  happens in the store, and it was settled in writing before any code. Two
+  options were rejected for stated reasons: paging the ordered set and then
+  filtering within the page would make the "N of M" count lie, and per-status
+  indexes are impossible to keep true because a share becomes expired when
+  the clock passes, with no write to hook an update onto — that index could
+  only be maintained by a sweeper and would be a second source of truth
+  between sweeps.
+
+  The load-bearing part is the fallback. A deployment that upgrades without
+  running "Rebuild index" has no ordered index, and an ordered index that is
+  absent, short, or rejected by the store all degrade to the previous full
+  read and still list every share. An empty admin table on upgrade would have
+  been the 30ecd7f silent-migration failure repeating. Rebuilding the index
+  is a performance opt-in, never a correctness dependency.
+
+  Known risk recorded rather than papered over: the store's REST command
+  shape for sorted sets cannot be verified in this environment, because the
+  tests run against an in-memory double that assumes the same shape the code
+  does. The fallback is what makes that survivable — if the commands are
+  rejected, the listing behaves exactly as it does today. Verify on deploy;
+  a listing that always falls back after a successful rebuild is the expected
+  failure signature.
+
 ### Verified
 - `npm run build` clean; all new routes register (`/api/shares/export`,
   `/api/watch/request-access`, `/api/analytics`), `Proxy (Middleware)` still registers with the
   async middleware.
-- `npm test` — 139/139 passing, stable across repeated runs (the base64url
+- `npm test` — 151/151 passing, stable across repeated runs (the base64url
   flake above was found this way). The view-cap round trip is proven end to
   end: a used-up share refused by the real access decision, the cap raised
   through the real route, and the SAME token then passing the gate.

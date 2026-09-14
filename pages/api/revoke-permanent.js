@@ -1,5 +1,5 @@
-import { kvGet, kvDel, kvSrem } from "../../lib/kv";
-import { SHARE_INDEX_KEY } from "../../lib/shares";
+import { kvGet, kvDel, kvSrem, kvZrem } from "../../lib/kv";
+import { SHARE_INDEX_KEY, SHARE_BY_CREATED_KEY } from "../../lib/shares";
 import { withApiMonitor } from "../../lib/withMonitor";
 
 // Admin-only (covered by the default middleware matcher). Irreversibly
@@ -23,6 +23,9 @@ export async function permanentlyDeleteOne(token) {
   }
   await kvDel(`bunnyshare:${token}`);
   await kvSrem(SHARE_INDEX_KEY, token);
+  // Both indexes drop the token together — an ordered index still holding a
+  // rank for a deleted record would serve a row that no longer exists.
+  await kvZrem(SHARE_BY_CREATED_KEY, token);
   return { token, ok: true };
 }
 

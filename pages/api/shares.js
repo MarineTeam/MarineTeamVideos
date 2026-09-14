@@ -1,6 +1,6 @@
 import { baseUrl } from "../../lib/shares";
 import { bundleLinksForTokens } from "../../lib/bundles";
-import { loadAllShares, filterShares, paginate } from "../../lib/shareQuery";
+import { loadAllShares, loadSharePage, filterShares, paginate } from "../../lib/shareQuery";
 import { withApiMonitor } from "../../lib/withMonitor";
 
 // Admin shares listing. Accepts optional `status`, `q`, `page` and `pageSize`
@@ -14,10 +14,24 @@ async function handler(req, res) {
   if (req.method !== "GET") return res.status(405).end();
   try {
     const { status, q, page, pageSize } = req.query;
+    const filtering = Boolean((status && status !== "all") || (q && q.trim()));
 
-    const all = await loadAllShares();
-    const filtered = filterShares(all, { status, q });
-    const pageResult = paginate(filtered, { page, pageSize });
+    // Unfiltered is the view that loads on every admin page open, so it gets
+    // the bounded read: one ranked range against the createdAt-ordered index
+    // plus one GET per row shown. Filtering still reads everything, because
+    // status is derived and search is a substring match — see the cost note
+    // in lib/shareQuery.js. `totalAll` therefore costs nothing extra when
+    // filtering (we already have every record) and one ZCARD when not.
+    let pageResult;
+    let totalAll;
+    if (filtering) {
+      const all = await loadAllShares();
+      pageResult = paginate(filterShares(all, { status, q }), { page, pageSize });
+      totalAll = all.length;
+    } else {
+      pageResult = await loadSharePage({ page, pageSize });
+      totalAll = pageResult.total;
+    }
 
     const siteUrl = baseUrl(req);
     // Bundle links are resolved for the CURRENT PAGE only — one scan of the
@@ -39,7 +53,7 @@ async function handler(req, res) {
       pageCount: pageResult.pageCount,
       // Unfiltered grand total, so the UI can say "12 of 340" without a
       // second round trip.
-      totalAll: all.length,
+      totalAll,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });

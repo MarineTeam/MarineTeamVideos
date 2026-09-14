@@ -360,6 +360,7 @@ rebuilds.
 | `gateused:<sha256(grant)>` | `1`, TTL = the grant's remaining life | `lib/singleUse.js` at the grant→cookie exchange | Makes already-used magic links replayable again for their remaining minutes. Harmless in practice, but it is the single-use protection, so do not flush casually |
 | `gateip:<ip>` | request count, `EX=60` | `lib/rateLimit.js` on all three public POST endpoints | Resets one sender's minute quota. Useful if you have rate-limited yourself while testing |
 | `accessreq:<token>` | `1`, `EX=3600` | `pages/api/watch/request-access.js` | Lets a recipient re-request access on that share before the hour is up |
+| `bunnyshare-by-created` (sorted set, permanent) | token → createdAt score | `createShareRecord`; removed by cleanup and permanent delete | Makes the unfiltered admin listing slow again until you rebuild the index. Never affects links or correctness |
 | `gatelog:<padded-ms>-<rand>` | the exchange entry, `EX=90 days` | `lib/gateLog.js` at each grant exchange | Destroys audit history. This is the one here you should NOT flush casually — it is evidence, not a protection |
 
 Operationally the one you will actually reach for is `gateip:<ip>` — testing
@@ -468,6 +469,26 @@ Extend. Things to know before reaching for it:
 - Extend and this are independent: a share can be live on time and used up
   on views, or vice versa. Check which limit actually stopped it before
   picking an action.
+
+### Rebuild the indexes after upgrading (updated 2026-09-13)
+
+"🔁 Rebuild index" on the admin page (`POST /api/backfill-index`) seeds the
+share and bundle index SETS and, since 2026-09-13, the `bunnyshare-by-created`
+SORTED SET that makes the unfiltered shares listing read one page instead of
+every record.
+
+Run it once after upgrading a store that already has shares. Until you do,
+nothing breaks — links work, the table lists everything, cleanup sweeps
+normally — the listing simply keeps its old read cost, because the read path
+treats an absent or short ordered index as untrustworthy and falls back. It
+is a performance opt-in, never a correctness dependency. Idempotent; safe to
+re-run.
+
+To tell which path is serving you, the listing's own response says so: a
+`loadSharePage` result carries `ordered: true` when the fast path engaged.
+A listing that always falls back after a successful backfill is the expected
+signature of the store rejecting the sorted-set commands — see roadmap item
+(m)'s deploy risk.
 
 ### Read the gate audit log (added 2026-09-13)
 

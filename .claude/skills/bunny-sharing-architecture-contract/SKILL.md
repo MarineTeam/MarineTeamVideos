@@ -522,7 +522,7 @@ scope decisions or unfinished hardening. "Candidate-fix" items live in
 | ~~Magic-link grant is NOT single-use~~ | — | FIXED 2026-09-13 (`5eb7245`), section 2.2's bounded exception. Not live-certified; degrades to the old replayable behaviour if KV errors, by design |
 | ~~No per-IP rate limiting~~ | Low | FIXED 2026-09-13 (`5eb7245`): `gateip:<ip>`, 10/min, on both public request-link endpoints. Coarse and non-atomic ON PURPOSE — a spam dampener, not a boundary; it can undercount under concurrency and fails open on any error |
 | No linter, no CI; tests exist but are unit-level only | Medium (process risk, not runtime risk) | Partly addressed 2026-09-13 (`5eb7245`): 50-case `node --test` suite. NO route-level, component-level, or live coverage, and nothing runs it automatically on push — bunny-sharing-validation-and-qa |
-| `/api/shares` and `/api/analytics` read EVERY share record per call | Low (cost/latency, not correctness) | Open — roadmap (m). Paging cut payload and browser work, not the KV read count |
+| Filtered/searched `/api/shares`, and `/api/analytics`, read EVERY share record per call | Low (cost/latency, not correctness) | Accepted by design — roadmap (m). The UNFILTERED listing became bounded 2026-09-13 via `bunnyshare-by-created`; filtering cannot use an index without a second source of truth, and a rollup legitimately needs every record |
 | ~~A used-up `maxViews` share cannot be revived without a new token~~ | — | FIXED 2026-09-13: `/api/share/allow-views` raises the cap in place, same token (2.8b) |
 | `share`/`share-bulk` store records BEFORE sending email; a send failure leaves a live record whose recipient never got the link | Low | Fixed 2026-07-20: failed sends are flagged (`emailFailed`/`emailError`, additive fields) instead of silently existing, and an admin "Resend" button re-sends and clears the flag — see section 5.1. Resend (`/api/share/resend`, `pages/api/share/resend.js` exporting `resendOne`) is not gated on `emailFailed` — any active share can be re-sent on demand, and `/api/share/resend-bulk` does the same for multiple selected shares in one call (admin selects rows via checkboxes in the shares table) |
 | The email gate has NOT been exercised against live Resend + a real inbox + prod Bunny/KV | High (unproven core flow) | Open — THE campaign: bunny-sharing-email-gate-campaign |
@@ -579,6 +579,18 @@ One record per recipient × video means views AND playback are attributable
 per person. Note: Player.js event delivery from the Bunny embed is
 code-complete but not yet observed live (campaign P3 item); if events never
 arrive, view tracking still works and playback columns simply stay empty.
+
+Second index (added 2026-09-13): `bunnyshare-by-created`, a SORTED SET of
+the same tokens scored by `createdAt`. Purely additive — `bunnyshare-index`
+keeps its name, shape and every call site. It exists so the unfiltered admin
+listing can read one page by rank instead of fetching every record to sort
+them. Both indexes are written together on create and removed together on
+delete; a token in one but not the other is a bug, and the read path treats
+a short ordered index as untrustworthy and falls back to the full read. That
+fallback is load-bearing: a deployment that upgrades without running
+`/api/backfill-index` must list its shares exactly as before, never an empty
+table. See roadmap item (m) for the rejected alternatives and the known
+deploy risk.
 
 Auxiliary key: `gatethrottle:<token>` — value `1`, Upstash `EX=30`
 (`pages/api/watch/request-link.js`). Ephemeral; not part of the
