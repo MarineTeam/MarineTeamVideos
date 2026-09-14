@@ -374,10 +374,12 @@ each is owned by a sibling skill.
 | Item | Detail | Status | Owner skill |
 |---|---|---|---|
 | Gate unproven live | The email gate (Episode 7) has never been exercised against live Resend + a real inbox + prod Bunny/KV. It is built, not proven. | OPEN — the hardest live problem | bunny-sharing-email-gate-campaign |
-| Magic-link grant not single-use | A grant is replayable within its 15-min TTL if intercepted (mitigated: cookie exchange + redirect strips it from the URL). | OPEN / hardening CANDIDATE | bunny-sharing-email-gate-campaign (hardening menu), bunny-sharing-roadmap |
-| No per-IP rate limiting | Throttle on request-link is per-share-token only (30 s); nothing limits one IP hammering many tokens. | OPEN | bunny-sharing-roadmap |
+| ~~Magic-link grant not single-use~~ | Built 2026-09-13 (`5eb7245`) — `lib/singleUse.js` marks a grant spent by SHA-256 fingerprint at the cookie exchange, TTL = its own remaining life. NOT live-certified; see Episode 12. | BUILT, not proven live | bunny-sharing-email-gate-campaign (hardening menu), bunny-sharing-roadmap (c) |
+| ~~No per-IP rate limiting~~ | Built 2026-09-13 (`5eb7245`) — `lib/rateLimit.js`, checked before any record lookup on both public request-link endpoints, over-limit returns the same `genericOk()`. NOT live-certified; see Episode 12. | BUILT, not proven live | bunny-sharing-roadmap (b) |
 | ~~KV `KEYS` is O(N)~~ | Fixed 2026-07-22 — index sets + SMEMBERS replace every hot-path KEYS scan; see roadmap item (a). | SETTLED | bunny-sharing-roadmap |
-| Plaintext Basic Auth compare | middleware.js compares `ADMIN_USER`/`ADMIN_PASS` env strings directly; single shared credential; no timing-safe compare. | OPEN | bunny-sharing-roadmap |
+| Plaintext Basic Auth compare | PARTLY closed 2026-09-13 (`5eb7245`): the compare is now constant-time (`lib/safeCompare.js`, WebCrypto double-HMAC — Edge has no `node:crypto` `timingSafeEqual`). Still a SINGLE SHARED credential with no lockout and no named users. | PARTLY SETTLED — shared-credential half still OPEN | bunny-sharing-roadmap (d) |
+| ~~Bunny list ceiling~~ | Was never in this register but was live in the code: `itemsPerPage=100` with no `page` param meant video #101+ was invisible and unshareable. Fixed 2026-09-13 (`5eb7245`). | SETTLED | bunny-sharing-roadmap (e) |
+| No automated tests | Was true until 2026-09-13 (`5eb7245`), which added a 50-case `node --test` suite. Still no linter and no CI, and the suite is unit-level only — no route-level or live coverage. | PARTLY SETTLED | bunny-sharing-validation-and-qa |
 | Record stored before email sent | share/share-bulk write the KV record, then email; a send failure leaves a live record with no delivered link. | OPEN | bunny-sharing-roadmap |
 
 ---
@@ -457,6 +459,68 @@ dismissible). Two lessons:
 
 ---
 
+## Episode 12 — The 2026-09-13 batch: three long-open items closed at once, and a near-miss
+
+**Trigger.** A session was asked to suggest features, then to build all of
+them. Twelve changes landed in one commit, `5eb7245`. Three of them closed
+items that had sat in Episode 10's register since it was written.
+
+**What closed.**
+- Single-use magic links (`lib/singleUse.js`) — hardening menu item 1.
+- Per-IP rate limiting (`lib/rateLimit.js`) — hardening menu item 2.
+- Constant-time admin compare (`lib/safeCompare.js`) — roadmap item (d),
+  first step only.
+- Bunny list pagination (`lib/bunny.js`) — roadmap item (e). This one was a
+  live bug, not a hardening candidate: a library over 100 videos silently
+  lost everything past the first page.
+- First automated tests (`tests/`, 50 cases) — roadmap item (g).
+
+**The near-miss, which is the part worth remembering.** The same batch made
+the admin shares table server-side paged. `computeAnalytics` lived in
+`pages/index.js` and was called as `computeAnalytics(shares)` — where
+`shares` had, until that moment, always been *every* share. After paging it
+would have been one page of 50. The Analytics panel would have kept
+rendering, with plausible-looking numbers, silently describing only the
+latest 50 shares. Nothing would have errored and no test would have caught
+it, because no test covered the panel.
+
+It was caught by re-reading the diff adversarially before pushing, not by
+the build, the tests, or the invariant greps. The fix was to move the rollup
+server-side (`computeAnalytics` in `lib/shareQuery.js`, exposed at
+`/api/analytics`) so it reads every record by construction.
+
+**Lesson, generalized:** when a data source that used to be complete becomes
+paged, filtered, or capped, every *derived* consumer of it silently changes
+meaning without changing shape. Grep for every reader of the collection you
+just narrowed. In this codebase that means: anything reading the `shares`
+array in `pages/index.js`, and anything reading `bundle.tokens` or an index
+set. A rollup that keeps rendering is not evidence that it is still correct.
+
+**Evidence shape — read this before trusting the batch.** This batch was
+verified differently from Episodes (f) through (j) in the roadmap, and less
+thoroughly in one specific way:
+
+| Check | This batch | Earlier adopted items (f)-(j) |
+|---|---|---|
+| `npm run build` clean | yes | yes |
+| Invariant greps | yes | yes |
+| Automated unit tests | yes (new; 50 cases) | none existed |
+| Route-level pass against mock KV + mock SMTP | **no** | yes |
+| Live Resend / Bunny / prod KV | no | no |
+
+So: the helper functions are better covered than anything before them, and
+the API routes that use those helpers are *less* covered than the routes
+added in July, which were exercised end-to-end against throwaway mock
+servers. Specifically unexercised at route level: the single-use exchange
+inside `pages/watch/[token].js` and `pages/bundle/[bundleId].js`, the per-IP
+branch in both request-link handlers, the first-play notification in
+`/api/watch/track`, and the whole `/api/watch/request-access` flow. Do not
+read "50 tests passing" as "this batch is proven".
+
+**Status: BUILT, NOT CERTIFIED.** No live pass, no deploy.
+
+---
+
 ## When NOT to use this skill
 
 - **Debugging a live symptom right now** (403s, emails not arriving, gate
@@ -477,8 +541,11 @@ actual diffs. If you touch this file, re-verify; wrong archaeology is worse
 than none.
 
 - New episodes since this was written? `git log --all --oneline -5` — anything
-  newer than `5905bba` (branch) / `65dc992` (main) is not chronicled here; read
-  it and add an episode.
+  newer than `5eb7245` (the 2026-09-13 batch, Episode 12) is not chronicled
+  here; read it and add an episode.
+- CI still absent? Yes as of `5eb7245`, but tests are NOT: `npm test` runs a
+  `node --test` suite (`ls tests/*.test.mjs`). "No tests" claims elsewhere
+  predate that commit.
 - Re-verify any episode: `git show <hash>` for its Evidence hashes.
 - CI still absent? `ls .github/workflows 2>/dev/null` (expect: nothing).
 - Overrides still present? `grep -A2 overrides package.json` (expect postcss

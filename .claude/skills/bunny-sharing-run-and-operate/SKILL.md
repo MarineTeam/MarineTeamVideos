@@ -4,7 +4,7 @@ description: >
   Operate the bunny-sharing app: run dev/build/start, understand the admin,
   recipient, and bundle-listing user journeys end-to-end (what happens
   server-side at each step), KV data conventions
-  (bunnyshare:/gatethrottle:/bunnybundle:/bundlethrottle: keys), and the operating
+  (bunnyshare:/gatethrottle:/bunnybundle:/bundlethrottle:/gateused:/gateip:/accessreq: keys), and the operating
   runbook — revoke shares, extend a share's expiry, resend, inspect shares,
   run cleanup, rotate GATE_SECRET or ADMIN_PASS, deploy to Vercel. Load this
   when running the app, answering "how
@@ -104,7 +104,8 @@ and `/watch/*` stay public). Never do it as a drive-by "fix the warning" edit.
 2. **Video grid loads** — `pages/index.js` fires `GET /api/videos` and
    `GET /api/shares` in parallel (`loadAll()`, pages/index.js:25-34).
    `/api/videos` calls Bunny's Stream API (`lib/bunny.js` `listVideos`,
-   AccessKey header, `itemsPerPage=100`). Thumbnail URLs come from
+   AccessKey header, `itemsPerPage=100` per page — paginated since
+   2026-09-13, so a library over 100 videos now lists fully). Thumbnail URLs come from
    `BUNNY_PULL_ZONE` and, if `BUNNY_CDN_TOKEN_KEY` is set, are **signed**
    (`signCdnUrl` in lib/bunny.js — required when the pull zone has Token
    Authentication enabled; unsigned thumbnails 403 in that case).
@@ -188,6 +189,15 @@ and `/watch/*` stay public). Never do it as a drive-by "fix the warning" edit.
    see 2c). Returns `{deleted: <n>}` covering both. This is the only path
    that removes records.
 
+**Shares table controls (added 2026-09-13).** The table is searched,
+filtered by status and paged SERVER-side, so what you see is one page (50
+rows) of a server-side query, not the whole store. Two consequences worth
+internalizing: a share you just created may not be on the page you are
+looking at if a filter is active, and the row count line reads "N of M" when
+filtered. "⬇ Export CSV" exports everything the CURRENT filter selects,
+unpaged. The Analytics panel is computed separately over every share
+(`/api/analytics`), so it is NOT limited to the visible page.
+
 ### 2b. RECIPIENT journey
 
 1. **Email link** — recipient clicks `<site>/watch/<token>` from the share
@@ -222,6 +232,18 @@ and `/watch/*` stay public). Never do it as a drive-by "fix the warning" edit.
    Path-scoped to exactly `/watch/<token>`, so a recipient with 3 bulk links
    verifies 3 times (once per link) UNLESS they instead verify once through
    the bundle page (2c) — that mints all 3 cookies in one go.
+8. **The magic link is single-use** (added 2026-09-13). Step 5's exchange
+   marks it spent, so clicking the same emailed link a second time lands on
+   the email form with the SAME "that sign-in link has expired" notice a
+   genuinely stale link produces. The cookie from the first click keeps
+   working, so this is invisible to a normal recipient — it only bites
+   someone re-clicking an old email instead of reloading the page, and the
+   fix is the same either way: request a new link.
+9. **Dead ends are now recoverable** (added 2026-09-13). A share past
+   `expiresAt` (but NOT one you revoked, and not one that hit a `maxViews`
+   cap) shows a "Request more time" form. Submitting the matching address
+   emails `ADMIN_NOTIFY_EMAIL`; you then Extend, and their original link
+   works again. Throttled to one per share per hour.
 
 ### 2c. BUNDLE journey (added 2026-07-20; widened same day to one-per-email)
 
@@ -280,6 +302,12 @@ One JSON object per share, written by `createShareRecord` (lib/shares.js):
 | `createdAt` | number | ms epoch |
 | `expiresAt` | number | ms epoch = createdAt + hours×3600×1000 (default 72 h) |
 | `revoked` | boolean | `false` at creation; flipped to `true` by /api/revoke |
+| `maxViews` | number (optional) | Added 2026-09-13. Cap on authorized page RENDERS (openings, not plays). Written only when a positive integer was given; absent = unlimited. Once `viewCount >= maxViews` the link stops rendering and the admin table shows "Used up". Nothing resets it — see roadmap (p) |
+| `note` | string (optional) | Added 2026-09-13. Admin's message to the recipient, ≤500 chars, opens the notification email. Stored raw, escaped at render |
+
+Several more optional fields exist for tracking, watermarking and email
+failure — see architecture-contract 5.1 for the complete list. All are
+additive: absent on older records, never assume present.
 
 Do NOT rename the key prefix or field names — live links depend on them
 (prime invariant: never break live links; see
@@ -319,6 +347,26 @@ creation.
 
 Same shape and purpose as `gatethrottle:<token>`, written by
 `pages/api/bundle/request-link.js`.
+
+### Keys added 2026-09-13 (`5eb7245`) — all self-expiring, all fail-open
+
+None of these is part of the compatibility contract. Every one degrades to
+the app's previous behaviour if the store errors, so you can flush any of
+them without breaking a live link — you only lose the protection until it
+rebuilds.
+
+| Key | Value / TTL | Written by | What flushing it does |
+|---|---|---|---|
+| `gateused:<sha256(grant)>` | `1`, TTL = the grant's remaining life | `lib/singleUse.js` at the grant→cookie exchange | Makes already-used magic links replayable again for their remaining minutes. Harmless in practice, but it is the single-use protection, so do not flush casually |
+| `gateip:<ip>` | request count, `EX=60` | `lib/rateLimit.js` on all three public POST endpoints | Resets one sender's minute quota. Useful if you have rate-limited yourself while testing |
+| `accessreq:<token>` | `1`, `EX=3600` | `pages/api/watch/request-access.js` | Lets a recipient re-request access on that share before the hour is up |
+
+Operationally the one you will actually reach for is `gateip:<ip>` — testing
+the gate repeatedly from one machine WILL trip the 10/min cap, and the
+symptom is deliberately invisible: you get the same "if that email
+matches..." response as always, and no email arrives. If magic links stop
+arriving during a test session and nothing else changed, check this before
+suspecting the mailer.
 
 ## 4. Operating tasks runbook
 

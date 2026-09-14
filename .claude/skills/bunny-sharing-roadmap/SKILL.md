@@ -4,9 +4,10 @@ description: >
   The forward-looking register for the bunny-sharing repo: the idea lifecycle
   (proposal → evidence plan → compatibility-safe implementation → certification
   → adoption or documented retirement), the open-problems list with file-level
-  first steps and falsifiable "you have a result when" milestones (KEYS→SCAN,
-  per-IP rate limiting, admin auth upgrade, Bunny pagination, email-failure
-  handling, bundle UX), and honest positioning of what here is standard
+  first steps and falsifiable "you have a result when" milestones (sorted
+  share index, audit log, cookie lifetime, view-cap administration, the
+  unbuilt half of the admin auth upgrade) plus the adopted-outcome record
+  for everything already shipped, and honest positioning of what here is standard
   practice vs genuinely nice design. Load this when proposing new work,
   prioritizing improvements, or asking "what should be built next". Do NOT
   load for executing the current gate certification
@@ -113,42 +114,121 @@ repo / "you have a result when…". All are CANDIDATES — none is scheduled wor
   intended improvement, but this wasn't independently re-benchmarked
   against a large synthetic index.
 
-### (b) Per-IP rate limiting on /api/watch/request-link
-- Owned by the campaign's hardening menu item 2 — see
+### (b) Per-IP rate limiting on request-link — ADOPTED 2026-09-13 (`5eb7245`)
+- **Was:** the campaign's hardening menu item 2 — see
   bunny-sharing-email-gate-campaign for mechanism and validation predicate.
-  Listed here only for priority ranking: do it after single-use links.
+- **What shipped:** `lib/rateLimit.js` — `allowRequestFromIp(req, limit=10)`
+  keyed on `gateip:<ip>` with a 60s TTL, plus `clientIp(req)` (first
+  `x-forwarded-for` entry, then `x-real-ip`). Wired into BOTH
+  `pages/api/watch/request-link.js` and `pages/api/bundle/request-link.js`,
+  placed AFTER the existing 400 for a missing body but BEFORE any `kvGet`,
+  so a spray costs one read rather than a record lookup plus a send. An
+  over-limit request returns the same `genericOk()` as every other branch —
+  invariant 4 holds on this path too, so rate limiting can never become an
+  oracle for which tokens are real. Deliberately a coarse fixed window with
+  a non-atomic read-modify-write: it is a spam dampener, not a security
+  boundary (the email gate is that), and concurrent requests may undercount.
+  Fails OPEN on a missing IP (local dev, non-proxied hosts) and on any KV
+  error.
+- **Verified:** `npm run build` clean; unit tests in `tests/kvBacked.test.mjs`
+  against an in-memory stand-in for the Upstash REST API cover allow-up-to-
+  the-cap-then-block, per-IP bucket isolation, and both fail-open paths;
+  `clientIp` header precedence covered in the same file; `grep -c
+  "genericOk()"` re-run on both endpoints.
+- **Not yet exercised:** the actual HTTP route with a real
+  `x-forwarded-for` from Vercel's edge; behaviour under genuine concurrency
+  (the undercount is reasoned about, not measured); no live pass. Note this
+  is a WEAKER evidence level at route level than items (f)-(j) got — see
+  failure-archaeology Episode 12's evidence-shape table.
 
-### (c) Single-use magic links
-- Owned by the campaign's hardening menu item 1 (top-ranked). Not duplicated
-  here.
+### (c) Single-use magic links — ADOPTED 2026-09-13 (`5eb7245`)
+- **Was:** the campaign's top-ranked hardening item. A grant verified every
+  time it was presented inside its 15-minute TTL, so an intercepted or
+  forwarded sign-in link was replayable.
+- **What shipped:** `lib/singleUse.js` — `isGrantSpent(grant)` /
+  `markGrantSpent(grant, expiresAtMs)` over a `gateused:<sha256(grant)>` key
+  whose TTL is the grant's own remaining life, plus `grantFingerprint()` in
+  `lib/gate.js`. The grant is stored HASHED, never raw: a KV dump of live
+  credentials would be worth more to an attacker than the replay protection
+  is worth to us. Wired into the grant-exchange branch of BOTH
+  `pages/watch/[token].js` and `pages/bundle/[bundleId].js`. Two decisions
+  worth preserving: (1) a spent grant falls through to the SAME
+  "that sign-in link has expired" form as a genuinely expired one, so a
+  replay is indistinguishable from a stale link and reveals nothing;
+  (2) ONLY the cookie-setting exchange spends a grant — no other path does —
+  which is the mitigation for an email-client prefetcher burning the link,
+  per the campaign's own trade-off note. Best-effort by design: both
+  functions swallow KV errors and log, degrading to the previous
+  replayable-within-TTL behaviour rather than locking out a recipient
+  holding a valid grant (never-break-live-links outranks replay protection).
+- **Verified:** `npm run build` clean; `tests/kvBacked.test.mjs` covers
+  spend-once, cross-grant isolation, TTL tracking the grant's remaining
+  life, no marker written for an already-dead grant, that the RAW grant is
+  never stored, and the fail-open path; `tests/gate.test.mjs` covers
+  `grantFingerprint` determinism and that it is not the grant itself.
+- **Not yet exercised:** the exchange inside either page at route level (no
+  mock-server pass), the prefetcher scenario against a real mail client, and
+  anything live. This is the bounded exception to the stateless-grant design
+  in architecture-contract 2.2 — that section now documents it.
 
-### (d) Admin auth upgrade (middleware.js)
-- **Why:** single shared credential, plaintext `===` comparison (not
-  timing-safe), no lockout. Acceptable for one trusted admin; weak beyond.
-- **Asset:** the auth boundary is one small file with a crisp matcher
-  invariant.
-- **First steps:** (1) minimal: constant-time compare via
-  `crypto.timingSafeEqual` on padded buffers in middleware.js (note:
-  middleware runs on the Edge runtime — verify `node:crypto` availability
-  there first; if unavailable, a WebCrypto HMAC-then-compare achieves the
-  same); (2) prediction: auth behavior byte-identical for correct/incorrect
-  creds (P2-style diff of 401 responses); (3) only later, if multiple admins
-  materialize: named users — a scope change requiring its own design pass.
-- **Result when:** compare is constant-time, matcher unchanged
-  (`/api/((?!watch/).*)` still excludes recipient endpoints), and the
-  validation-and-qa middleware checklist passes untouched.
+### (d) Admin auth upgrade (middleware.js) — STEP 1 ADOPTED 2026-09-13 (`5eb7245`); rest still OPEN
+- **Was:** single shared credential, plaintext `===` comparison (not
+  timing-safe), no lockout.
+- **What shipped (step 1 only — the constant-time compare):**
+  `lib/safeCompare.js`'s `timingSafeEqualStr(a, b)`. The Edge-runtime
+  question the old first-step note raised was answered: `node:crypto`'s
+  `timingSafeEqual` is NOT available in middleware, so this uses the
+  WebCrypto fallback that note anticipated — a "double HMAC" under a
+  random per-call key, comparing two fixed-length 32-byte digests with
+  branch-free XOR accumulation. Fixed-length digests mean the comparison
+  can't leak secret length; the random key means even a sloppy digest
+  comparison would reveal nothing about the plaintext. In `middleware.js`
+  both halves are ALWAYS evaluated (`Promise.all`, no `&&` short-circuit),
+  so a right username with a wrong password costs the same as a wrong
+  username. A `slowEqualStr` fallback covers a missing `crypto.subtle` and
+  never throws — an auth check must not become a 500. New explicit guard:
+  `if (auth && user && pass)`, so unset env vars reject everyone as before
+  and the compare can never be handed a stringified `undefined`.
+- **Verified:** `npm run build` clean, `Proxy (Middleware)` still registers
+  with the now-async middleware; `tests/safeCompare.test.mjs` covers equal,
+  unequal, length-differing, correct-prefix, unicode, and the
+  `undefined`-guard case; invariant greps re-run (matcher unchanged, 401 +
+  `WWW-Authenticate` challenge untouched, geo block still strictly inside
+  the credential-match branch).
+- **Not yet exercised:** the timing property is argued from construction,
+  NOT measured on Vercel's Edge runtime. Nobody has benchmarked
+  correct-vs-incorrect credential latency. Treat "constant-time" here as
+  "no data-dependent branch we can see", not as a measured result.
+- **Still open (the larger half):** a single shared credential, no lockout,
+  no named users, no per-admin audit. Named users remain a scope change
+  needing its own design pass — do not bolt them onto this file.
 
-### (e) Bunny list pagination (lib/bunny.js)
-- **Why:** `itemsPerPage=100` with no paging — video #101 silently never
-  appears in the admin grid.
-- **Asset:** Bunny's list API is already paginated (`page` param,
-  `totalItems` in response).
-- **First steps:** (1) loop pages in `listVideos()` until `items` is short or
-  `totalItems` reached; (2) prediction: a library with >100 videos lists all
-  of them; ≤100 behaves identically; (3) consider UI consequences (grid
-  length) separately.
-- **Result when:** seeded/test library with 101+ videos shows all titles via
-  /api/videos (count equals the library's totalItems).
+### (e) Bunny list pagination (lib/bunny.js) — ADOPTED 2026-09-13 (`5eb7245`)
+- **Was:** `itemsPerPage=100` with no `page` param, in BOTH `listVideos()`
+  and `listCollections()`. Video #101 silently never appeared in the admin
+  grid and therefore could never be shared. This was a live data-loss bug,
+  not a hardening candidate — it sat in this register from 2026-07-18 to
+  2026-09-13 because nobody's library had crossed 100 yet.
+- **What shipped:** a shared `listAllPages(buildUrl)` walker plus a
+  `bunnyGet(path)` helper (both module-private). The walk stops on a short
+  or empty page OR once `totalItems` is reached — both conditions, because
+  neither alone is reliable across Bunny's list endpoints. `MAX_PAGES = 200`
+  is a hard stop so a malformed or hostile `totalItems` can never spin
+  forever. `PAGE_SIZE = 100` is unchanged, so a library at or under one page
+  makes exactly ONE request with the same order and the same shape as
+  before.
+- **Verified:** `npm run build` clean; `tests/bunny.test.mjs` stubs the
+  Bunny API and asserts 250 items come back across exactly 3 page requests,
+  42 items come back in exactly 1 (no speculative second call), an
+  exactly-100 library does not loop past the empty page, collections
+  paginate identically, and a non-ok response still throws
+  `Bunny API error: <status>` rather than silently returning a short list.
+- **Not yet exercised:** a REAL Bunny library with more than 100 videos.
+  The stub reports `totalItems` honestly; a real endpoint that omits or
+  misreports it would fall back to the short-page condition, which is
+  covered by construction but not observed. The original "result when"
+  predicate — a seeded library of 101+ videos listing all of them through
+  `/api/videos` — is still unmet.
 
 ### (f) Email-send failure handling — ADOPTED 2026-07-20
 - **Was:** the KV record was written BEFORE the email sends; a mailer
@@ -201,10 +281,41 @@ repo / "you have a result when…". All are CANDIDATES — none is scheduled wor
   revoking a token mid-batch correctly produced `{error: "Share is revoked
   or expired"}` for that token only; both endpoints 401 without admin creds.
 
-### (g) Automated tests
-- Owned by bunny-sharing-validation-and-qa §4 (candidate `node --test` plan).
-  Priority: rises sharply the moment any lifecycle rule-3 prediction is
-  awkward to verify by hand twice.
+### (g) Automated tests — FIRST SUITE ADOPTED 2026-09-13 (`5eb7245`); coverage still thin
+- **Was:** no tests, no linter, no CI. Every lifecycle rule-3 prediction was
+  verified by hand, twice if you were careful.
+- **What shipped:** `npm test` → `node --import ./tests/register.mjs --test
+  tests/*.test.mjs`. 50 cases across seven files: `gate.test.mjs` (sign/
+  verify round-trip, expiry, token binding, signature AND payload tampering,
+  malformed input, bundle-vs-video token separation, fingerprint
+  properties), `kvBacked.test.mjs` (single-use and per-IP against an
+  in-memory stand-in for the Upstash REST API), `bunny.test.mjs`
+  (pagination, with a stubbed API), `settings.test.mjs` (the full
+  watermark resolution order), `shares.test.mjs` (`parseEmails` fan-out,
+  `normalizeNote`, `SITE_URL` fail-loud), `shareQuery.test.mjs` (status
+  derivation, filters, paging clamps, analytics rollup), `csv.test.mjs`
+  (quoting and formula-injection escaping).
+- **One mechanism worth knowing:** the app's source uses extensionless
+  relative imports (`from "./kv"`), which Next's bundler resolves and plain
+  Node ESM does not. Rather than rewrite every import across the codebase —
+  a wide cosmetic diff against a repo whose first rule is to change as
+  little as possible — the runner installs a test-only resolver hook
+  (`tests/resolve-hook.mjs`, registered by `tests/register.mjs`) that
+  retries a failed relative resolution with `.js`. Nothing shipped depends
+  on it. If you ever add `"type": "module"` to package.json or convert the
+  imports, delete the hook rather than leaving two mechanisms.
+- **Verified:** 50/50 passing. One test bug was found and fixed while
+  writing them: the payload-tamper case originally rebuilt a payload that
+  could land byte-identical to the signed one (same `Date.now()`
+  millisecond) and so passed on its own signature. It now forges a
+  different recipient. Watch for that shape in any new crypto test.
+- **Still open — what the suite does NOT cover:** no API route is tested;
+  no React component is tested (the Analytics near-miss in
+  failure-archaeology Episode 12 would not have been caught by this suite);
+  no linter; no CI, so nothing runs these automatically on push. The next
+  rung is route-level tests against a mock KV/SMTP harness — the shape
+  items (f) through (j) used manually in July. See
+  bunny-sharing-validation-and-qa §4.
 
 ### (h) Bulk "bundle" landing page — ADOPTED 2026-07-20
 - **Was:** a bulk recipient got N links in one email with no single page
@@ -489,7 +600,10 @@ repo / "you have a result when…". All are CANDIDATES — none is scheduled wor
   `async` to add ONE conditional `kvGet` (only when
   `adminGeoWhitelist().length > 0`, i.e. zero cost for every deployment
   that hasn't set the env var) strictly INSIDE the existing
-  `if (u === user && p === pass)` block: unauthenticated or wrong-credential
+  `if (u === user && p === pass)` block (that line became
+  `if (userOk && passOk)` on 2026-09-13 — see item (d); the geo block's
+  placement inside the credential-match branch is unchanged, which is the
+  property that matters here): unauthenticated or wrong-credential
   requests take the exact same path and get the exact same 401 as before —
   the geo check never runs for them, so it can't become a way to probe
   valid credentials or leak info pre-auth. `pages/api/settings.js`'s GET
@@ -500,7 +614,8 @@ repo / "you have a result when…". All are CANDIDATES — none is scheduled wor
   configured") read-only, with just the enforcement checkbox editable.
 - **Verified:** L0 only (`npm run build` clean, `Proxy (Middleware)` route
   still registers with the now-async `middleware()`; invariant greps
-  re-run: matcher unchanged, `u === user && p === pass` compare unweakened,
+  re-run: matcher unchanged, the credential compare unweakened (it was
+  `u === user && p === pass` at the time; constant-time since 2026-09-13),
   the 401 + `WWW-Authenticate` challenge for bad/missing creds untouched,
   and read-confirmed that the whole geo block sits inside the credential-
   match branch). No live pass yet.
@@ -544,6 +659,62 @@ repo / "you have a result when…". All are CANDIDATES — none is scheduled wor
   doubled (recipient side was never live-verified even under the original
   KV design before this follow-up replaced it).
 
+### (m) Sorted share index so paging cuts KV reads — OPEN (opened 2026-09-13)
+- **Why:** `/api/shares` is now filtered and paged server-side, but
+  `loadAllShares()` (lib/shareQuery.js) still does SMEMBERS + one GET per
+  token on EVERY call. Paging cut response size and browser render work —
+  the thing that actually hurt at a few hundred shares — but not the read
+  count. Ordering is newest-first and filters match `email`/`videoTitle`,
+  all of which live inside the records, so there is nothing cheaper to sort
+  or filter on today.
+- **Asset:** `bunnyshare-index` already exists and is maintained on create
+  (`lib/shares.js`) and delete (`cleanup.js`, `revoke-permanent.js`).
+- **First steps:** (1) add a Redis sorted set scored by `createdAt`
+  alongside the existing index — additive, never a rename (non-negotiable
+  1); (2) prediction: a page of 50 costs ~51 KV ops regardless of total
+  share count, versus N+1 today; (3) decide what status/search filters do
+  when they can no longer be applied before paging — likely: page the
+  sorted set, then filter within the page, and accept approximate counts,
+  OR keep the full scan only for filtered queries. Write that decision down
+  BEFORE coding; it is the whole design.
+- **Result when:** `/api/shares?page=1` on a synthetic 1,000-share index
+  issues a bounded number of KV ops that does not grow with the total, and
+  `/api/analytics` (which legitimately needs every record) is the only
+  remaining full reader.
+
+### (n) Audit log of grant exchanges — OPEN
+- Owned by the campaign's hardening menu item 4. Now the highest-ranked
+  UNBUILT hardening item, since items 1 and 2 shipped 2026-09-13.
+
+### (o) Cookie/grant lifetime tuning — OPEN
+- Owned by the campaign's hardening menu item 3. Pure policy choice; nobody
+  has made it. Note it interacts with item (c): now that magic links are
+  single-use, a shorter cookie life means more magic-link round-trips, each
+  of which is now a one-shot credential. Decide them together.
+
+### (p) View-cap administration — OPEN (opened 2026-09-13)
+- **Why:** shares gained an optional `maxViews` cap (`5eb7245`), enforced in
+  `pages/watch/[token].js` beside revoked/expired. But Extend moves
+  `expiresAt` only — it does not touch `viewCount` — so a used-up share
+  stays used up, and there is NO admin action that raises or resets a cap.
+  The only recovery is re-sharing, which mints a new token and breaks the
+  recipient's existing link: exactly the workflow item (i) existed to
+  eliminate.
+- **First steps:** (1) decide whether the action is "raise the cap" or
+  "reset the count" — they differ in what the audit trail says happened;
+  (2) mirror `extendOne`'s shape in `pages/api/share/` including its refusal
+  on revoked records; (3) prediction: a used-up share becomes live again
+  with the SAME token, URL and cookie.
+- **Result when:** a used-up share can be restored to working without a new
+  token, and the admin table's "Used up" status clears.
+
+### (q) Bulk Restore — OPEN
+- Revoke, resend and extend all have bulk forms; Restore deliberately does
+  not (see item (k) for the reasoning: restoring access someone deliberately
+  cut off is more consequential than extending or revoking). Revisit only if
+  a real "I revoked the wrong batch" incident occurs. Listed so the asymmetry
+  reads as a decision, not an oversight.
+
 ## 3. Positioning: standard vs actually nice
 
 Standard practice, competently applied (claim nothing): magic links, HMAC-SHA256
@@ -558,12 +729,32 @@ construction).
 
 ## 4. Where ideas come from here (observed, not aspirational)
 
-Git history shows every adopted idea originated from: a security scanner
+Through 2026-07-22, every adopted idea originated from: a security scanner
 finding (CodeQL → escapeHtml/isValidUrl), a real incident (thumbnail 403s →
 signCdnUrl), or a concrete user request (bulk + email gating → the
 2026-07-18 build). None came from speculative refactoring. Implication:
-prefer instrumenting and listening (audit log, error surfacing — items d/f)
-over inventing features.
+prefer instrumenting and listening (audit log, error surfacing) over
+inventing features.
+
+**2026-09-13 is the first exception, and it cuts both ways.** That batch
+(`5eb7245`) came from an open-ended "suggest features" request, not from an
+incident or a specific ask. Read honestly:
+
+- The items that were already in THIS register — (b), (c), (d), (e), (g) —
+  were the valuable half. They had been sitting here with first steps
+  written; the request was just the occasion to execute them. Item (e) in
+  particular was a live bug shipping silently.
+- The invented half — view caps, notes, first-play notification, access
+  requests, CSV export, table filtering — had no user asking for any of it.
+  It is plausible, it is documented, and it is unproven in the only sense
+  that matters: nobody has yet said they wanted it. Some of it may be dead
+  weight. Item (p) exists because one of those inventions (view caps)
+  shipped with an administration gap that a real user would hit first.
+
+So the rule stands, with a refinement: when asked for ideas, mine this
+register before inventing anything, and mark invented features as
+speculative in the changelog so a later session can tell which features
+earned their place and which merely got built.
 
 ## When NOT to use this skill
 
@@ -579,8 +770,17 @@ Written 2026-07-18 against branch claude/bulk-share-separate-links-auth-cblrle.
 - (a) still adopted: `grep -rln "kvKeys" pages lib` should show ONLY
   `pages/api/backfill-index.js` (plus `lib/kv.js`'s own definition) —
   anything else means a KEYS scan crept back into a hot path
-- (d) still true: `grep -n "u === user" middleware.js` (plain compare present)
-- (e) still true: `grep -n "itemsPerPage" lib/bunny.js` (=100, no page param)
-- (f) still true: `grep -n -A3 "createShareRecord" pages/api/share.js` (record write precedes sendShareEmail)
+- (b)/(c) still adopted: `grep -rn "allowRequestFromIp" pages/api` (both
+  request-link endpoints) and `grep -rn "isGrantSpent" pages` (both gate
+  pages) — a missing hit means a hardening item was reverted
+- (d) step 1 still adopted: `grep -n "timingSafeEqualStr" middleware.js`
+  (constant-time compare present; a bare `u === user` returning means it
+  regressed)
+- (e) still adopted: `grep -n "page=\${page}" lib/bunny.js` (two hits: videos
+  and collections) — `itemsPerPage=100` alone with no `page` is the bug
+- (g) still adopted: `npm test` (expect 50+ passing); `ls tests/*.test.mjs`
+- (m) still open: `grep -n "loadAllShares" lib/shareQuery.js pages/api` —
+  while `/api/shares` still calls it, paging has not cut the read count
+- (f) still adopted: `grep -n "setEmailFailed" pages/api/share.js` (failure is flagged, not 500'd)
 - Entry ownership: campaign items → `grep -n "Hardening menu" .claude/skills/bunny-sharing-email-gate-campaign/SKILL.md`
 - Remove or update entries here as they are adopted (record outcomes in failure-archaeology).

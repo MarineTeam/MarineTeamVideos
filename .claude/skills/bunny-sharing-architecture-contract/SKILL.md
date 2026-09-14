@@ -124,6 +124,23 @@ suggestions; they are the reasons the system is safe and simple.
   move grants into KV you gain per-grant revocation but inherit storage,
   TTL bookkeeping, and a new failure surface — do not do this without a
   concrete need (see bunny-sharing-roadmap).
+- **The ONE bounded exception (added 2026-09-13, `5eb7245`): single-use
+  marking.** `lib/singleUse.js` stores a `gateused:<sha256(grant)>` key when
+  a MAGIC-LINK grant is exchanged for a cookie, with a TTL equal to that
+  grant's own remaining life. This is deliberately the narrowest possible
+  breach of "nothing about a grant is stored": it stores a HASH, not the
+  grant; it stores nothing for cookie grants, only for the emailed one-shot;
+  it stores nothing for a grant that is already expired; and the entry
+  self-expires exactly when the grant would have died anyway, so the
+  keyspace does not grow. Verification still does not consult storage —
+  `verifyGrant` is untouched and remains pure — the spent-check is a
+  separate lookup at one call site in each gate page. Crucially it is
+  **best-effort**: both helpers swallow KV errors and log, so a store
+  failure degrades to the previous replayable-within-TTL behaviour rather
+  than locking out a recipient holding a valid grant. That ordering is
+  deliberate — never-break-live-links (invariant 1) outranks replay
+  protection. Do NOT generalize this into KV-stored sessions; the campaign's
+  hardening note that named it "the bounded exception" is the whole licence.
 
 ### 2.3 Grant lifecycle: 15-min emailed grant → cookie grant → redirect strip
 
@@ -138,8 +155,20 @@ suggestions; they are the reasons the system is safe and simple.
   path-scoped. The redirect strips `?grant=` from the address bar and
   browser history so the emailed credential does not linger anywhere
   copyable.
+- **Single-use, since 2026-09-13 (`5eb7245`)**: the exchange now also marks
+  the magic-link grant spent (section 2.2's bounded exception), and a grant
+  already marked spent takes the SAME fall-through as an invalid or expired
+  one — the email form with "that sign-in link has expired". A replay is
+  therefore indistinguishable from a stale link and reveals nothing about
+  whether the grant was ever real. Only this cookie-setting exchange spends
+  a grant; no other code path does, which is the deliberate mitigation for
+  an email-client link prefetcher consuming the link before the human
+  clicks. If you add another place that accepts a `?grant=`, decide
+  explicitly whether it spends — and default to no.
 - **What breaks**: Lengthening the magic-link TTL widens the interception
   window. Skipping the redirect leaves a live credential in history/referer.
+  Spending the grant on a path that does NOT set the cookie turns every
+  prefetching mail client into a denial of service against your recipients.
   Making the cookie grant outlive the share is harmless in effect (record
   check still gates) but violates least-surprise; making it shorter forces
   pointless re-verification.
@@ -272,13 +301,33 @@ suggestions; they are the reasons the system is safe and simple.
   `/api/watch/*` and `/api/bundle/*`; `/watch/*` and `/bundle/*` pages are
   never matched at all (Next only runs middleware on paths named in
   `matcher`).
+- **Credential comparison (changed 2026-09-13, `5eb7245`)**: the compare is
+  no longer `u === user && p === pass`. It is
+  `timingSafeEqualStr` (`lib/safeCompare.js`) applied to both halves under
+  `Promise.all`, so neither half short-circuits the other and a correct
+  username with a wrong password costs the same as a wrong username. The
+  implementation is a random-per-call double HMAC over WebCrypto, because
+  middleware runs on the **Edge runtime** where `node:crypto`'s
+  `timingSafeEqual` does not exist — if you ever move this check into a Node
+  context, prefer the native primitive there rather than assuming this one
+  is equivalent. A new explicit `if (auth && user && pass)` guard means
+  unset env vars reject everyone (as before) AND the compare can never be
+  handed a stringified `undefined` to match against. The 401 body and
+  `WWW-Authenticate` challenge are byte-identical to before. Honest limit:
+  the timing property is argued from construction and has NOT been measured
+  on Edge.
 - **Why**: One declarative boundary instead of per-route auth checks that
   someone will forget on the next route.
 - **What breaks**: Any new admin API route is protected automatically — but
   any new **public** route must be carved out of the matcher or it silently
   401s for recipients. Conversely, naming an admin route under `/api/watch/`
   or `/api/bundle/` exposes it unauthenticated — those two prefixes must stay
-  recipient-only, never grow an admin sub-route. Note (as of 2026-07-18): the
+  recipient-only, never grow an admin sub-route. Routes added 2026-09-13
+  under each side: `/api/shares/export` and `/api/analytics` are ADMIN
+  (covered automatically, no matcher change needed);
+  `/api/watch/request-access` is PUBLIC by virtue of its `/api/watch/`
+  prefix — which is exactly the rule above working as designed, and exactly
+  why that prefix must never gain an admin route. Note (as of 2026-07-18): the
   Next 16 build warns that the `middleware` file convention is deprecated in
   favor of `proxy`; renaming is a behavior-affecting change — do not do it
   casually.
@@ -341,9 +390,15 @@ suggestions; they are the reasons the system is safe and simple.
 
 ### 2.9 `deliver()` is the single email chokepoint; provider is config, not code
 
-- **Decision**: All three senders (`sendShareEmail`, `sendBulkShareEmail`,
-  `sendMagicLinkEmail`) route through one `deliver({to, subject, text,
-  html})` (`lib/mailer.js:32-54`). If `RESEND_API_KEY` is set → Resend HTTP
+- **Decision**: All SIX senders route through one `deliver({to, subject,
+  text, html})` (`lib/mailer.js`). Recipient-facing: `sendShareEmail`,
+  `sendBulkShareEmail`, `sendMagicLinkEmail`, `sendBundleMagicLinkEmail`.
+  Admin-facing (added 2026-09-13, `5eb7245`):
+  `sendFirstPlayNotificationEmail`, `sendAccessRequestEmail` — both send to
+  `adminNotifyAddress()` (`ADMIN_NOTIFY_EMAIL`, falling back to the
+  configured from-address) and both interpolate recipient-controlled values
+  (a typed email address, a Bunny video title), so they carry the same
+  `escapeHtml` obligation as every template above them. If `RESEND_API_KEY` is set → Resend HTTP
   API; otherwise nodemailer SMTP (`secure` iff port 465). Callers never know
   which.
 - **Why**: Provider swap = env-var change, zero code. Guards
@@ -365,12 +420,14 @@ from the repo root to confirm it still holds.
 | 1 | **Never break live links** (prime directive): existing tokens, `bunnyshare:*` key prefix, record field meanings, `/watch/<token>` URL shape, and `gate_<token>` cookie name/path keep working across all changes. (Cautionary tale: `30ecd7f` silently migrated `share:` → `bunnyshare:` and orphaned old records.) | `grep -rn "bunnyshare:" lib pages` — every KV access uses the prefix; `grep -rn "gate_" pages` — cookie name unchanged |
 | 2 | All user-controlled strings in email HTML pass `escapeHtml`; all links pass `isValidUrl` (`lib/mailer.js:4-22`) | `grep -n "escapeHtml\|isValidUrl" lib/mailer.js` — present in every `send*` function |
 | 3 | `baseUrl(req)` REQUIRES `SITE_URL` and fails loudly if unset (`lib/shares.js`) — never falls back to the request's Host header, which a client can spoof. (2026-07-22 fix for a CodeQL host-header-poisoning finding; see failure-archaeology for the incident.) | `grep -n "SITE_URL is not set" lib/shares.js` — throw present; `grep -n "req.headers.host" lib/shares.js` — expect NO match |
-| 4 | `/api/watch/request-link` AND `/api/bundle/request-link` return an IDENTICAL 200 body for invalid link/bundle, mismatched email, throttled, success, AND any unexpected runtime error (anti-enumeration) | `grep -cn "genericOk()" pages/api/watch/request-link.js pages/api/bundle/request-link.js` — expect 5 call sites each (the catch block also returns `genericOk()`, not a distinguishable 500, as of the 2026-07-22 fix) |
+| 4 | `/api/watch/request-link`, `/api/bundle/request-link` AND `/api/watch/request-access` return an IDENTICAL 200 body for every outcome — invalid link/bundle, mismatched email, throttled, rate-limited, success, AND any unexpected runtime error (anti-enumeration) | `grep -n "genericOk" pages/api/watch/request-link.js pages/api/bundle/request-link.js pages/api/watch/request-access.js` — expect 1 definition + 6 `return genericOk()` sites in each (5 outcome branches + the catch block, plus the per-IP branch added 2026-09-13). Any NEW branch in any of these handlers must return `genericOk()` |
 | 5 | `GATE_SECRET` has no default; the gate throws if unset (`lib/gate.js:14-22`) | `grep -n "throw" lib/gate.js` — inside `secret()` |
 | 6 | Grant verification uses `crypto.timingSafeEqual`; grants are token-bound and expiring (`lib/gate.js:55,60-61`) | `grep -n "timingSafeEqual\|payload.t !== token\|payload.x" lib/gate.js` |
 | 7 | Middleware matcher keeps `/api/watch/*` and `/api/bundle/*` public and everything else on the admin surface behind Basic Auth (plus an opt-in admin geo whitelist); `/watch/*` and `/bundle/*` stay out of the matcher | `grep -n "matcher" middleware.js` — exactly `["/", "/api/((?!watch/\|bundle/).*)"]` |
 | 8 | Every share has its own token; bulk M recipients × N videos → M×N records, each independently revocable | `grep -n "createShareRecord" pages/api/share-bulk.js` — inside the per-recipient, per-video loops |
 | 9 | Revoke flips `revoked: true`, never deletes; `pages/api/revoke-permanent.js` is the one EXPLICIT exception (requires the record already be revoked) plus `cleanup.js` (revoked-or-expired sweep) | `grep -n "kvDel" pages/api/*.js` — only `cleanup.js` and `revoke-permanent.js` match |
+| 10 | A magic-link grant is spendable once: the cookie-setting exchange marks it via `lib/singleUse.js`, and a spent grant falls through to the SAME form as an expired one (added 2026-09-13). Never spend a grant on a path that does not set the cookie | `grep -n "isGrantSpent\|markGrantSpent" "pages/watch/[token].js" "pages/bundle/[bundleId].js"` — expect both, inside the `query.grant` branch only |
+| 11 | Admin credentials are compared in constant time, both halves always evaluated (added 2026-09-13) | `grep -n "timingSafeEqualStr" middleware.js` — expect it in a `Promise.all`, NOT behind `&&`; a bare `u === user` means it regressed |
 
 ## 4. Known weak points — honest register
 
@@ -381,11 +438,13 @@ scope decisions or unfinished hardening. "Candidate-fix" items live in
 
 | Weak point | Severity | Status |
 |------------|----------|--------|
-| Basic Auth compares plaintext env strings with `===` (`middleware.js:18`); single shared admin credential; no timing-safe compare | Medium (admin surface; attacker needs network position or many guesses) | Accepted-for-now; candidate-fix in bunny-sharing-roadmap |
+| Single shared admin credential; no lockout; no named users | Medium (admin surface) | Partly addressed 2026-09-13 (`5eb7245`): the compare is now constant-time (section 2.7). The shared-credential half is still open — roadmap (d) |
 | ~~`kvKeys` uses Redis `KEYS` — O(N) full scan~~ FIXED 2026-07-22: `bunnyshare-index`/`bunnybundle-index` SETs + `SMEMBERS` replace it everywhere except the one-time `/api/backfill-index` migration | N/A | Adopted (bunny-sharing-roadmap item a) |
-| Magic-link grant is NOT single-use within its 15-min TTL — replayable if intercepted. Mitigated: cookie exchange + redirect strips it from URL/history | Medium | Candidate-fix (top hardening item in bunny-sharing-email-gate-campaign) |
-| Throttle is 30 s per share token only (`gatethrottle:<token>`); no per-IP rate limiting on `/api/watch/request-link` | Low-Medium (email-bombing across many tokens, or KV load) | Candidate-fix (bunny-sharing-roadmap) |
-| No tests, no linter, no CI (two scanners were added, then deleted — see bunny-sharing-failure-archaeology). Verification is manual | Medium (process risk, not runtime risk) | Candidate-fix (bunny-sharing-validation-and-qa) |
+| ~~Magic-link grant is NOT single-use~~ | — | FIXED 2026-09-13 (`5eb7245`), section 2.2's bounded exception. Not live-certified; degrades to the old replayable behaviour if KV errors, by design |
+| ~~No per-IP rate limiting~~ | Low | FIXED 2026-09-13 (`5eb7245`): `gateip:<ip>`, 10/min, on both public request-link endpoints. Coarse and non-atomic ON PURPOSE — a spam dampener, not a boundary; it can undercount under concurrency and fails open on any error |
+| No linter, no CI; tests exist but are unit-level only | Medium (process risk, not runtime risk) | Partly addressed 2026-09-13 (`5eb7245`): 50-case `node --test` suite. NO route-level, component-level, or live coverage, and nothing runs it automatically on push — bunny-sharing-validation-and-qa |
+| `/api/shares` and `/api/analytics` read EVERY share record per call | Low (cost/latency, not correctness) | Open — roadmap (m). Paging cut payload and browser work, not the KV read count |
+| A used-up `maxViews` share cannot be revived without a new token | Low | Open — roadmap (p). Extend moves `expiresAt` only; there is no cap-reset action |
 | `share`/`share-bulk` store records BEFORE sending email; a send failure leaves a live record whose recipient never got the link | Low | Fixed 2026-07-20: failed sends are flagged (`emailFailed`/`emailError`, additive fields) instead of silently existing, and an admin "Resend" button re-sends and clears the flag — see section 5.1. Resend (`/api/share/resend`, `pages/api/share/resend.js` exporting `resendOne`) is not gated on `emailFailed` — any active share can be re-sent on demand, and `/api/share/resend-bulk` does the same for multiple selected shares in one call (admin selects rows via checkboxes in the shares table) |
 | The email gate has NOT been exercised against live Resend + a real inbox + prod Bunny/KV | High (unproven core flow) | Open — THE campaign: bunny-sharing-email-gate-campaign |
 | Revocation is not instant: an in-flight Bunny embed token stays valid up to 3600 s after revoke (section 2.5) | Low (bounded window, by design) | Accepted-for-now |
@@ -423,6 +482,8 @@ over the Upstash REST API (`lib/kv.js:19-22`).
 | `watermark` | boolean (optional) | Per-share watermark override (added post-1.1.0). Stored ONLY when explicitly `true`/`false`; ABSENT means "inherit the global default". Read by `resolveWatermark` (lib/settings.js) on the authorized watch render. Additive — absent on all older records, which inherit exactly as before |
 | `lastPositionSec` | number (optional) | Resume support (added post-1.1.0): furthest/most-recent playback position in seconds, written by `/api/watch/track` on the `position` event. Additive; last-writer-wins |
 | `durationSec` | number (optional) | Video duration in seconds, reported alongside `lastPositionSec`; lets the watch page suppress a resume offer near the end. Additive |
+| `maxViews` | number (optional) | Per-share cap on AUTHORIZED PAGE RENDERS (added 2026-09-13, `5eb7245`). Written ONLY when a positive integer was supplied — never `0`, which would read as "nobody may open this". Absent means unlimited, which is how every earlier record behaves. Enforced in `pages/watch/[token].js` beside revoked/expired, BEFORE the email gate, as `record.maxViews && (record.viewCount \|\| 0) >= record.maxViews`. It counts openings, not plays. Note the gap: nothing resets or raises it — see roadmap (p) |
+| `note` | string (optional) | Short admin-supplied message (added 2026-09-13, `5eb7245`), trimmed and capped at 500 chars by `normalizeNote` (lib/shares.js). Stored RAW, escaped at every render point (`escapeHtml` for email, React for the admin table) — never pre-escaped, so the stored value stays the literal text typed. Absent when blank |
 
 View fields are written by `pages/watch/[token].js` only on the AUTHORIZED
 branch (valid cookie grant → embed render) — never for the email form or a
@@ -441,9 +502,20 @@ code-complete but not yet observed live (campaign P3 item); if events never
 arrive, view tracking still works and playback columns simply stay empty.
 
 Auxiliary key: `gatethrottle:<token>` — value `1`, Upstash `EX=30`
-(`pages/api/watch/request-link.js:43-48`). Ephemeral; not part of the
+(`pages/api/watch/request-link.js`). Ephemeral; not part of the
 compatibility contract, but keep the name stable so in-flight throttles
 survive a deploy.
+
+Three more ephemeral namespaces were added 2026-09-13 (`5eb7245`). None is
+part of the compatibility contract, all self-expire, and all are
+best-effort — every one of them fails OPEN, so losing the store degrades
+behaviour rather than blocking anyone:
+
+| Key | Value / TTL | Written by | Purpose |
+|---|---|---|---|
+| `gateused:<sha256(grant)>` | `1`, TTL = the grant's own remaining life | `lib/singleUse.js`, from the grant exchange in both gate pages | Single-use magic links (section 2.2's bounded exception). Keyed by HASH, never the raw grant |
+| `gateip:<ip>` | request count, `EX=60` | `lib/rateLimit.js`, from both public request-link endpoints | Per-IP dampener, 10/min. Non-atomic read-modify-write by design |
+| `accessreq:<token>` | `1`, `EX=3600` | `pages/api/watch/request-access.js` | One access request per expired share per hour |
 
 ### 5.1a Bundle record — KV key `bunnybundle:<bundleId>`
 
@@ -487,7 +559,12 @@ Read on every authorized watch render (for the watermark decision) and by the
 admin `/api/settings` route (GET/POST) and `/api/video-watermark` route (POST,
 sets one video's override), both behind the middleware matcher like any
 non-`watch/`/`bundle/` API route. Fields: `watermarkDefault` (boolean),
-`watermarkExemptEmails` (string[]), `watermarkExemptDomains` (string[]), and
+`watermarkExemptEmails` (string[]), `watermarkExemptDomains` (string[]),
+`geoWhitelistEnabled` / `adminGeoWhitelistEnabled` (booleans — runtime
+toggles only; the country LISTS live in env vars, never here),
+`notifyOnFirstPlay` (boolean, added 2026-09-13 `5eb7245` — emails
+`ADMIN_NOTIFY_EMAIL` the first time a share is played; off by default and
+inert without a notify address), and
 `watermarkByVideo` (object, Bunny videoId → boolean — per-video overrides;
 videos have no KV record of their own, so their override lives here; an absent
 key means inherit). Absent record → `DEFAULTS` (watermark off, no exemptions,
@@ -610,10 +687,21 @@ bunny-sharing-roadmap item i. Section 2.8 updated 2026-07-21 for bulk revoke
 (`pages/api/revoke-bulk.js`, `revokeOne` exported from `pages/api/revoke.js`)
 — see bunny-sharing-roadmap item j.
 
+Updated 2026-09-13 for the `5eb7245` batch: section 2.2 (the bounded
+single-use exception to stateless grants), 2.3 (single-use in the grant
+lifecycle), 2.7 (constant-time credential compare; the two new admin routes
+and one new public route), 2.9 (six senders, two of them admin-facing),
+section 3 invariants 4/10/11, section 4's weak-points register, 5.1
+(`maxViews`, `note`), 5.1's auxiliary-key table (`gateused:`, `gateip:`,
+`accessreq:`), and 5.1b (`notifyOnFirstPlay`). That batch is verified by
+build, a 50-case unit suite, and invariant greps — NOT by a live pass and
+NOT by route-level tests; see failure-archaeology Episode 12 for the
+evidence-shape comparison against the July items.
+
 Re-verify volatile facts before trusting them:
 
 ```bash
-git log --oneline -3                                  # still at/after 5905bba, plus the bundle commit?
+git log --oneline -3                                  # still at/after 5eb7245 (the 2026-09-13 batch)?
 grep -n "matcher" middleware.js                        # section 2.7 / invariant 7 — expect (?!watch/|bundle/)
 grep -n "MAGIC_LINK_TTL_MS\|THROTTLE_SECONDS" pages/api/watch/request-link.js   # section 2.3
 grep -n "randomBytes\|expiresAt\|revoked" lib/shares.js                         # section 5.1
@@ -627,6 +715,12 @@ grep -n "findOrExtendBundle" lib/bundles.js pages/api/share.js pages/api/share-b
 grep -n "extendOne\|Cannot extend a revoked" pages/api/share/extend.js         # section 2.8a
 grep -n "extendBundleForToken" lib/bundles.js pages/api/share/extend.js        # bundle expiry propagation
 grep -n "revokeOne" pages/api/revoke.js pages/api/revoke-bulk.js               # section 2.8 bulk revoke
+grep -n "isGrantSpent\|markGrantSpent" "pages/watch/[token].js" "pages/bundle/[bundleId].js"  # section 2.2/2.3 single-use, invariant 10
+grep -n "timingSafeEqualStr" middleware.js                                     # section 2.7, invariant 11
+grep -n "allowRequestFromIp" pages/api/watch/request-link.js pages/api/bundle/request-link.js  # per-IP dampener
+grep -n "maxViews" lib/shares.js "pages/watch/[token].js"                      # section 5.1 view cap
+grep -n "gateused:\|gateip:\|accessreq:" lib pages                             # section 5.1 auxiliary keys
+npm test                                                                        # expect 50+ passing (roadmap g)
 ```
 
 If any grep comes back changed or empty, the contract has drifted: read the

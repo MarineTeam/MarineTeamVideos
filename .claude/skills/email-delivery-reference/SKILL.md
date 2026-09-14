@@ -76,16 +76,37 @@ API branch returns before the transporter is ever built. If someone reports
 "I changed SMTP_HOST and nothing happened", check for a set `RESEND_API_KEY`
 first.
 
-### The three senders
+### The six senders
 
-All three are in `lib/mailer.js`; these are the only exports and the only
-email the app ever sends.
+All are in `lib/mailer.js`; these are the only exports and the only email
+the app ever sends. Four go to RECIPIENTS; two (added 2026-09-13,
+`5eb7245`) go to the ADMIN via `adminNotifyAddress()` — `ADMIN_NOTIFY_EMAIL`
+falling back to the same `fromAddress()` chain, so a deployment with neither
+simply sends nothing and each call site guards on that.
 
 | Sender | Called from | Trigger | Must contain |
 | --- | --- | --- | --- |
-| `sendShareEmail({to, videoTitle, link, expiresAt})` (line 56) | `pages/api/share.js` | admin shares one video | the video title, the `/watch/<token>` link, the expiry date, "may be revoked" notice |
-| `sendBulkShareEmail({to, items, expiresAt})` (line 78) | `pages/api/share-bulk.js` | admin bulk-shares N videos | one list item per video, each with its OWN distinct link (invariant: N videos = N tokens = N independently revocable links), shared expiry date |
-| `sendMagicLinkEmail({to, videoTitle, link})` (line 108) | `pages/api/watch/request-link.js` | recipient types the matching email on `/watch/<token>` | the `/watch/<token>?grant=<signed>` magic link (15-min grant), "expires shortly" wording, "ignore if you didn't request this" |
+| `sendShareEmail({to, videoTitle, link, expiresAt, note})` | `pages/api/share.js` | admin shares one video | the video title, the `/watch/<token>` link, the expiry date, "may be revoked" notice; the optional `note` opens the body |
+| `sendBulkShareEmail({to, items, expiresAt, bundleLink, note})` | `pages/api/share-bulk.js`, and `pages/api/share.js` once a recipient has >1 active share | admin bulk-shares N videos, or a repeat share consolidates | one list item per video, each with its OWN distinct link (invariant: N videos = N tokens = N independently revocable links), shared expiry date, optional bundle link, optional opening `note` |
+| `sendMagicLinkEmail({to, videoTitle, link})` | `pages/api/watch/request-link.js` | recipient types the matching email on `/watch/<token>` | the `/watch/<token>?grant=<signed>` magic link (15-min grant, SINGLE-USE since 2026-09-13), "expires shortly" wording, "ignore if you didn't request this" |
+| `sendBundleMagicLinkEmail({to, link})` | `pages/api/bundle/request-link.js` | recipient types the matching email on `/bundle/<id>` | the `/bundle/<id>?grant=<signed>` magic link; generic wording (no single title to name) |
+| `sendFirstPlayNotificationEmail({to, videoTitle, recipientEmail, viewedAt})` | `pages/api/watch/track.js` | ADMIN-facing: a share is played for the first time ever | who played what and when; the "one of these per share" reassurance |
+| `sendAccessRequestEmail({to, videoTitle, recipientEmail, token, expiredAt})` | `pages/api/watch/request-access.js` | ADMIN-facing: recipient of an EXPIRED link asks for more time | who is asking, which video, the share token, and the instruction to use Extend (which keeps their existing link working) |
+
+**The two admin senders interpolate recipient-controlled values** — an email
+address typed by an anonymous visitor, a video title from the Bunny library
+— so they carry exactly the same `escapeHtml` obligation as the
+recipient-facing templates. `sendAccessRequestEmail` deliberately carries NO
+free-text message from the requester: it is reachable from a PUBLIC endpoint,
+and anything it forwarded verbatim would be an unauthenticated channel for
+pushing attacker-chosen prose into the admin's inbox. Do not "improve" it by
+adding a message field.
+
+**The `note` field** (optional, on both share senders) is admin-supplied and
+rendered by `noteBlocks()`. Note the ordering there: it escapes FIRST and
+converts newlines to `<br/>` SECOND. Reversing that would let a crafted note
+inject markup, since the `<br/>` insertion would then be escaped instead of
+the content.
 
 Behavioral details you must preserve when editing:
 
@@ -256,7 +277,7 @@ following, no exceptions:
   way — email client HTML support is archaic and inconsistent, and
   link-plus-sentence emails have nothing to gain from styling. (Observed
   convention, not user doctrine.)
-- **Always provide both `text` and `html`.** All three senders do
+- **Always provide both `text` and `html`.** All six senders do
   (lib/mailer.js:66-73, 96-103, 116-123). The multipart text alternative
   matters for deliverability scoring (html-only mail is a spam signal) and
   for text-mode clients. Preserve this in any new sender.
@@ -288,11 +309,11 @@ Verified 2026-07-18 against commit `5905bba` on branch
 volatile facts:
 
 ```bash
-# Branch rule, from-chain, error wrapping, secure/port logic, three senders:
+# Branch rule, from-chain, error wrapping, secure/port logic, six senders:
 sed -n '24,54p' lib/mailer.js          # fromAddress + deliver()
 grep -n "export async function" lib/mailer.js
 # Call sites (should be exactly these three files):
-grep -rn "sendShareEmail\|sendBulkShareEmail\|sendMagicLinkEmail" pages/
+grep -rn "sendShareEmail\|sendBulkShareEmail\|sendMagicLinkEmail\|sendBundleMagicLinkEmail\|sendFirstPlayNotificationEmail\|sendAccessRequestEmail" pages/
 # Env var documentation still matches:
 sed -n '23,35p' .env.example
 # Magic-link TTL and throttle:

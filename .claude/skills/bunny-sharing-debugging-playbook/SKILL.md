@@ -48,6 +48,11 @@ Jargon, once:
 | `/api/videos` returns 500 | Read the JSON `error` field | `BUNNY_API_KEY` / `BUNNY_LIBRARY_ID` wrong — Bunny's own error text is passed through (lib/bunny.js:16, pages/api/videos.js:9) | S1 |
 | No share email arrives (share / bulk / magic link) | Which deliver() path is active? (`RESEND_API_KEY` set → API, else SMTP; lib/mailer.js:35). Check the shares table for a "⚠ email failed" badge first — the record already has the error. | Resend: domain/from/key problem. SMTP: port/TLS/auth. | S2 |
 | Magic link never arrives though the email "matches" | Did the recipient get "Check your email" (200) or an error (500)? | Mismatch vs throttle vs delivery failure — run the 4-step sequence | S2 |
+| Magic links stopped arriving mid-testing, nothing else changed | Have you requested >10 links in a minute from this machine? | Per-IP rate limit (`gateip:<ip>`, 10/min, added 2026-09-13). The response is UNCHANGED and no email sends — silent by design. Delete the key or wait 60 s | S2 |
+| "That sign-in link has expired" right after a click that worked | Did they re-click the EMAIL, or reload the page? | Single-use magic links (added 2026-09-13) — re-clicking a spent link is expected | S3 |
+| "This link has reached its view limit." | Does the record have `maxViews`? | The share's view cap is spent. Extend does not reset it | S5 |
+| A share is missing from the admin table | Status filter / search / page number in the toolbar | Server-side filtering and paging (added 2026-09-13), not a data problem | S5 |
+| First-play notification never arrives | Settings toggle ON *and* `ADMIN_NOTIFY_EMAIL` (or a from-address) resolving? | Both are required and the failure is silent and swallowed by design; also fires only ONCE per share, ever | S2 |
 | Magic link never sends on a link that was bulk-shared to several people; all recipients got the SAME links | `record.email` in KV — does it contain commas/spaces? | Legacy combined-email record (pre-2026-07-19 comma-string bug; failure-archaeology Ep. 9). Gate now matches any listed address, so sign-in works — but the token is shared between those recipients; revoke + re-share for per-person links/tracking | S2 |
 | Recipient submits email → error "GATE_SECRET is not set…" | — | `GATE_SECRET` unset in the runtime env (lib/gate.js:14-22); build passes without it, only requests fail | S3 |
 | `/watch/<token>` returns 500 | Server logs / `curl` the page | KV unreachable or bad creds — `kvGet` throws inside `getServerSideProps` (lib/kv.js:13-15, pages/watch/[token].js:122) | S3, S5 |
@@ -228,8 +233,14 @@ Note on `GATE_SECRET`: unset, it does NOT 500 the page render — `verifyGrant` 
 
 ### "That sign-in link has expired" every time
 
-That notice (pages/watch/[token].js:157-164) means a `?grant=` was present but `verifyGrant` returned null. Four branches, in order of likelihood:
+That notice means a `?grant=` was present but was not accepted. Since 2026-09-13 there are FIVE branches, and the first one is new — the notice is deliberately identical for all of them, so you cannot tell them apart from the page:
 
+0. **Already used (added 2026-09-13, `5eb7245`).** Magic links are now single-use: the grant is marked spent at the cookie-setting exchange (`lib/singleUse.js`), and a spent grant takes this exact fall-through. This is BY DESIGN — a replay must look like a stale link, or the page becomes an oracle telling an interceptor the link was real. Recognize it by the sequence, not the message: the recipient clicked the emailed link, it worked, and then they clicked the SAME email link again (rather than reloading the page or using the bookmark). Their cookie is still valid, so tell them to open `/watch/<token>` directly. Confirm server-side if you must:
+   ```bash
+   # the marker, if present, is the sha256 of the grant string
+   curl -s -H "Authorization: Bearer $KV_REST_API_TOKEN" "$KV_REST_API_URL/get/gateused:<sha256-of-grant>"
+   ```
+   If EVERY first click now shows this notice, that is a real bug — something is spending grants on a path that does not set the cookie. Check that `markGrantSpent` appears only inside the `query.grant` branch of the two gate pages.
 1. **Genuinely expired** — magic-link grants live 15 min (request-link.js:8, `MAGIC_LINK_TTL_MS`). Recipient clicked an old email. Expected; request a fresh link.
 2. **`GATE_SECRET` differs between signer and verifier** — rotated between send and click, or different values across environments (preview vs production on Vercel). Every outstanding grant AND every existing `gate_<token>` cookie dies on rotation. Verify the deployed value is the one you think it is; a quick fingerprint without printing the secret:
    ```bash
@@ -262,11 +273,11 @@ By design. The cookie is `Path=/watch/<token>` (pages/watch/[token].js:152): one
 
 ## S4 — Admin / auth
 
-middleware.js applies HTTP Basic Auth with matcher `["/", "/api/((?!watch/).*)"]` (middleware.js:31): `/` and all `/api/*` EXCEPT `/api/watch/*`; `/watch/*` pages are never matched.
+middleware.js applies HTTP Basic Auth with matcher `["/", "/api/((?!watch/|bundle/).*)"]`: `/` and all `/api/*` EXCEPT `/api/watch/*` and `/api/bundle/*`; `/watch/*` and `/bundle/*` pages are never matched.
 
 ### Browser Basic-Auth prompt loops
 
-The check is plain string equality against `ADMIN_USER`/`ADMIN_PASS` (middleware.js:18). If either env var is **unset**, `u === user` compares string to `undefined` — never true, so every attempt 401s and the browser re-prompts forever. Same loop for a plain typo. Discriminate:
+Since 2026-09-13 the check is a CONSTANT-TIME compare (`timingSafeEqualStr`, lib/safeCompare.js) rather than `===`, and there is an explicit `if (auth && user && pass)` guard. Behaviour on failure is unchanged: if either env var is **unset**, nobody matches, so every attempt 401s and the browser re-prompts forever. Same loop for a plain typo. Note middleware is now `async` — if it somehow fails to register (check `Proxy (Middleware)` in the build output) the symptom is the OPPOSITE of a loop: the admin surface becomes unauthenticated. Discriminate:
 
 ```bash
 curl -s -o /dev/null -w "%{http_code}\n" -u "$ADMIN_USER:$ADMIN_PASS" \
@@ -315,6 +326,8 @@ Branches:
 - Both empty but you created shares recently → you are pointed at a DIFFERENT database than the app (local `.env.local` vs Vercel env often diverge). Compare `KV_REST_API_URL` in both places.
 - Keys exist but shares table still empty in the UI → curl `/api/shares` with admin creds and read the error; also note a specific record vanishing after "Cleanup" is expected if it was revoked or expired (pages/api/cleanup.js:9-13).
 - Revoked share still listed → correct: revoke is a flag flip, never a delete (pages/api/revoke.js:12-13); only Cleanup deletes.
+- **A specific share is missing but others show (added 2026-09-13):** the table is now server-side FILTERED and PAGED. Check, in this order: (1) is a status filter active in the toolbar — a revoked or expired share is hidden under "Active"; (2) is there a search term; (3) are you on page 1 — the table is newest-first, 50 per page. The row-count line reads "N of M" whenever a filter is narrowing the result. This is the single most likely cause of "my share vanished" on a current build, and it is not a KV problem at all. Confirm with an unfiltered query: `curl -s -u "$ADMIN_USER:$ADMIN_PASS" "$SITE_URL/api/shares?page=1" | head -c 400`.
+- **A share shows "Used up" (added 2026-09-13):** it hit its `maxViews` cap. Not a bug, and Extend will NOT revive it — Extend moves `expiresAt` only. Today the only way back is re-sharing (new token). See roadmap (p).
 
 ## S6 — Build / dev
 
