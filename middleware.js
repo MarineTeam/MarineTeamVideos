@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { kvGet } from "./lib/kv";
 import { adminGeoWhitelist, adminGeoBypassEmails, isGeoAllowedEdge } from "./lib/geo";
+import { timingSafeEqualStr } from "./lib/safeCompare";
 
 // Protects the admin page and its API routes with HTTP Basic Auth.
 // The /watch/[token] and /bundle/[bundleId] pages are NOT covered, so
@@ -12,13 +13,26 @@ export async function middleware(req) {
   const user = process.env.ADMIN_USER;
   const pass = process.env.ADMIN_PASS;
 
-  if (auth) {
+  // No configured credentials means NOBODY gets in — same end state as the
+  // previous plain `===` compare against an undefined env var, but stated
+  // explicitly so the constant-time compare below can never be handed a
+  // stringified `undefined` to match against.
+  if (auth && user && pass) {
     const [, encoded] = auth.split(" ");
     const decoded = Buffer.from(encoded, "base64").toString();
     const idx = decoded.indexOf(":");
     const u = decoded.slice(0, idx);
     const p = decoded.slice(idx + 1);
-    if (u === user && p === pass) {
+    // Constant-time compare (lib/safeCompare.js). Both halves are ALWAYS
+    // evaluated — no `&&` short-circuit — so a correct username followed by
+    // a wrong password costs exactly as much as a wrong username. The
+    // previous `u === user && p === pass` leaked, by timing, both how much
+    // of each credential matched and whether the username was right at all.
+    const [userOk, passOk] = await Promise.all([
+      timingSafeEqualStr(u, user),
+      timingSafeEqualStr(p, pass),
+    ]);
+    if (userOk && passOk) {
       // Additional, OPT-IN geo restriction on top of valid credentials.
       // The country list comes only from ADMIN_GEO_WHITELIST (an env var,
       // never the admin-editable KV settings — see lib/geo.js for why);

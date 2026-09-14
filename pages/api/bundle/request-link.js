@@ -3,6 +3,7 @@ import { signGrant, normalizeEmail } from "../../../lib/gate";
 import { sendBundleMagicLinkEmail } from "../../../lib/mailer";
 import { baseUrl } from "../../../lib/shares";
 import { withApiMonitor } from "../../../lib/withMonitor";
+import { allowRequestFromIp } from "../../../lib/rateLimit";
 
 // Same TTL/throttle constants and same uniform-response reasoning as
 // /api/watch/request-link.js — see that file for why. This is the bundle
@@ -24,6 +25,16 @@ async function handler(req, res) {
     const { bundleId, email } = req.body || {};
     if (!bundleId || !email) {
       return res.status(400).json({ error: "bundleId and email are required" });
+    }
+
+    // Per-IP dampener (lib/rateLimit.js), checked BEFORE any KV lookup so a
+    // spray costs one GET rather than a full record read plus a send. Over
+    // the limit returns the SAME genericOk() as every other outcome —
+    // invariant 4 (anti-enumeration) applies to this branch exactly as it
+    // does to a wrong email or a dead link, so rate limiting can never
+    // become an oracle for which tokens are real.
+    if (!(await allowRequestFromIp(req))) {
+      return genericOk();
     }
 
     const bundle = await kvGet(`bunnybundle:${bundleId}`);

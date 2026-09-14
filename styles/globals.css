@@ -247,6 +247,15 @@ textarea:focus {
   color: var(--color-danger);
 }
 
+/* A share that hit its per-share view cap: spent, but not revoked and not
+   yet expired — styled closer to "expired" than to "revoked", since nobody
+   deliberately cut it off. */
+.status-usedup {
+  background: #fff8c5;
+  color: #9a6700;
+  border: 1px solid #eac54f;
+}
+
 /* Recipient-facing centered pages (watch / bundle / email gate) */
 .recipient-page {
   min-height: 100vh;

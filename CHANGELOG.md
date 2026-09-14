@@ -29,6 +29,125 @@ Nine version tags mark points release notes were cut from this history:
   their bulk forms).
 - **v1.0.0** — everything at and before 2026-07-06.
 
+## Unreleased
+
+### Added
+- **Bunny library pagination** (`lib/bunny.js`). Both `listVideos()` and
+  `listCollections()` now walk every page instead of sending one
+  `itemsPerPage=100` request with no `page` param. A library with more than
+  100 videos silently lost everything past the first page — video #101 never
+  appeared in the admin grid and could not be shared at all. A library at or
+  under one page makes exactly one request, as before, with identical order
+  and shape. A `MAX_PAGES` stop guards against a malformed `totalItems`.
+- **Single-use magic links** (`lib/singleUse.js`, both gate pages). A grant
+  is marked spent — by SHA-256 fingerprint, never stored raw — at the moment
+  it is exchanged for a cookie, with a TTL equal to its own remaining life.
+  Replaying an intercepted or forwarded sign-in link inside its 15-minute
+  window now fails, and fails *identically to an expired link*, so it reveals
+  nothing. Only the cookie-setting exchange spends a grant, which is what
+  keeps a mail-client prefetch from burning the link on a path that grants
+  nothing. Best-effort by design: a store failure degrades to the previous
+  replayable behaviour rather than locking out a valid recipient.
+- **Per-IP rate limiting** on `/api/watch/request-link` and
+  `/api/bundle/request-link` (`lib/rateLimit.js`). The existing throttle was
+  per-share-token only, so nothing stopped one source spraying many tokens.
+  Checked before any record lookup, so a spray costs one read rather than a
+  full lookup plus a send. Over-limit returns the same `genericOk()` as every
+  other branch — anti-enumeration (invariant 4) holds on this path too.
+  Fails open on a missing IP or a store error.
+- **Constant-time admin credential compare** (`lib/safeCompare.js`,
+  `middleware.js`). Replaces `u === user && p === pass`, which short-circuited
+  and leaked through timing both how much of each credential matched and
+  whether the username was right. Middleware runs on the Edge runtime, where
+  `node:crypto`'s `timingSafeEqual` is unavailable, so this uses a
+  random-per-call double-HMAC over WebCrypto and compares fixed-length
+  digests branch-free. Both halves are always evaluated. Unset credentials
+  are now rejected explicitly, so the compare can never be handed a
+  stringified `undefined`. The 401 challenge is byte-identical to before.
+- **First automated tests** (`tests/`, `npm test`). 50 `node --test` cases
+  over the gate crypto (round-trip, expiry, token binding, signature and
+  payload tampering, malformed input, bundle/video token separation),
+  single-use marking, per-IP limiting, Bunny pagination, watermark
+  resolution order, recipient-email parsing, `SITE_URL` fail-loud, share
+  status/filter/paging, the analytics rollup, and CSV formula-injection
+  escaping. No env vars or
+  network required. The app's source uses extensionless imports that Next
+  resolves and plain Node does not, so the runner installs a small test-only
+  resolver hook (`tests/register.mjs`) rather than rewriting every import
+  across the codebase.
+- **First-play notification.** Optionally emails the admin the first time a
+  recipient actually plays a share, driven off the record's `firstPlayedAt`
+  being absent, so it fires at most once per share ever — never per view.
+  New `notifyOnFirstPlay` setting (off by default) and `ADMIN_NOTIFY_EMAIL`
+  env var. Sent after the record write and fully swallowed on failure:
+  `/api/watch/track` is fire-and-forget and must not fail because mail is
+  down. Bounded by the existing tracking grant, an active share, and the
+  never-played-before condition.
+- **Per-share view limit.** New additive `maxViews` field, enforced in
+  `pages/watch/[token].js` alongside revoked/expired so a spent link never
+  reaches the email gate. Stored only when a positive integer is supplied —
+  absent means unlimited, exactly how every pre-existing record behaves.
+  Surfaced in both Share forms, in the Views column (`3× / 3`), and as a new
+  "Used up" status in the admin table and the status filter.
+- **Note to recipients.** New additive `note` field (trimmed, capped at 500
+  characters) carried into the single and bulk notification emails as an
+  opening block, escaped like every other interpolated value, and shown
+  under the video title in the admin table.
+- **Searchable, filterable, server-side-paged shares table.**
+  `/api/shares` gains `status`, `q`, `page` and `pageSize`, backed by a new
+  shared `lib/shareQuery.js` so the listing and the export can never disagree
+  about what a filter selects. The response adds `total`, `page`, `pageCount`
+  and `totalAll` alongside the unchanged `shares` array. Honest scope: this
+  cuts response size and browser work, not the number of store reads —
+  ordering and filtering both need fields inside the records, and there is no
+  sorted index. That remains open.
+- **CSV export** (`/api/shares/export`, `lib/csv.js`). Honours the same
+  filters as the listing, never paginated. Cells beginning with `=`, `+`,
+  `-`, `@`, tab or CR are prefixed as text so a video title or note can't
+  execute as a formula when the export is opened. UTF-8 BOM for Excel.
+  Admin-only via the existing matcher — no matcher change needed.
+- **Server-side per-video analytics** (`/api/analytics`, `computeAnalytics`
+  moved into `lib/shareQuery.js`). Required by the paging change above rather
+  than wanted for its own sake: the rollup used to be computed in the browser
+  from the full shares array, so once the table only held one page it would
+  have silently reported "analytics for the latest 50 shares" while looking
+  unchanged. Computing it server-side over every record keeps the number
+  honest and keeps the rows out of the browser, which was the point of paging.
+- **Access requests on expired links** (`/api/watch/request-access`). Turns
+  the dead-end expired page into a recoverable path: the recipient asks for
+  more time, the admin extends, and the original link keeps working.
+  Deliberately narrow — expired only (never revoked), no free-text message
+  from the requester, only sends on an address match, throttled per share per
+  hour plus the per-IP cap, and uniform response on every branch.
+
+### Verified
+- `npm run build` clean; all new routes register (`/api/shares/export`,
+  `/api/watch/request-access`, `/api/analytics`), `Proxy (Middleware)` still registers with the
+  async middleware.
+- `npm test` — 50/50 passing.
+- Invariant greps re-run: matcher unchanged
+  (`["/", "/api/((?!watch/|bundle/).*)"]`), `bunnyshare:` prefix unchanged
+  with no bare `share:` keys, `gate_<token>` cookie name and
+  `Path=/watch/<token>` unchanged, `SITE_URL` fail-loud with no Host-header
+  fallback, `timingSafeEqual` and the fail-loud `GATE_SECRET` still present
+  in `lib/gate.js`, `escapeHtml`/`isValidUrl` applied in every mail template
+  including the two new admin ones, revoke still flag-only with no `kvDel`,
+  `kvDel` still confined to `cleanup.js` and `revoke-permanent.js`, and
+  `kvKeys` still confined to `backfill-index.js`.
+- Every new record field (`maxViews`, `note`) is additive and optional;
+  no existing field was renamed or changed meaning, and no KV key prefix
+  moved.
+
+### Not yet exercised
+- No live pass against real Resend/Bunny/KV for any of the above. In
+  particular the single-use exchange, the per-IP limiter, the first-play
+  notification and the access-request flow have been proven by unit tests and
+  code reading, not against a real inbox or a deployed instance.
+- Bunny pagination is verified against a stubbed API that reports
+  `totalItems`, not against a real library of more than 100 videos.
+- The constant-time compare has not been measured for timing behaviour on
+  Vercel's Edge runtime; it is argued from construction, not benchmarked.
+
 ## v1.8.0 — 2026-07-30
 
 ### Added

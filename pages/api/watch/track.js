@@ -1,6 +1,8 @@
 import { kvGet, kvSet } from "../../../lib/kv";
 import { verifyGrant } from "../../../lib/gate";
 import { withApiMonitor } from "../../../lib/withMonitor";
+import { getSettings } from "../../../lib/settings";
+import { sendFirstPlayNotificationEmail, adminNotifyAddress } from "../../../lib/mailer";
 
 // PUBLIC (under /api/watch/*, excluded from admin Basic Auth). Records real
 // playback events reported by the Bunny embed player on the /watch page.
@@ -27,6 +29,10 @@ async function handler(req, res) {
 
     const now = Date.now();
     const updated = { ...record };
+
+    // True the FIRST time this share is ever played, and only then. Used
+    // below to fire the admin notification exactly once per share.
+    const isFirstPlay = event === "play" && !record.firstPlayedAt;
 
     if (event === "play") {
       updated.playCount = (record.playCount || 0) + 1;
@@ -55,6 +61,31 @@ async function handler(req, res) {
     }
 
     await kvSet(`bunnyshare:${token}`, updated);
+
+    // Opt-in admin notification on first play. Deliberately AFTER the record
+    // write and fully swallowed on failure: tracking is fire-and-forget from
+    // the player's point of view, and a mailer outage must never turn into a
+    // failed track call or a changed response. This route is public, so the
+    // send is bounded three ways — it needs a valid tracking grant, an
+    // active share, and a record that has never been played before, which
+    // means at most ONE email per share for the life of that share.
+    if (isFirstPlay) {
+      try {
+        const settings = await getSettings();
+        const notifyTo = adminNotifyAddress();
+        if (settings.notifyOnFirstPlay && notifyTo) {
+          await sendFirstPlayNotificationEmail({
+            to: notifyTo,
+            videoTitle: record.videoTitle,
+            recipientEmail: record.email,
+            viewedAt: now,
+          });
+        }
+      } catch (err) {
+        console.error("first-play notification failed (non-fatal):", err);
+      }
+    }
+
     res.status(200).json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });

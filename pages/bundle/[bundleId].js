@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { kvGet } from "../../lib/kv";
 import { signGrant, verifyGrant } from "../../lib/gate";
+import { isGrantSpent, markGrantSpent } from "../../lib/singleUse";
 import { getBundleMembers } from "../../lib/bundles";
 import { getSettings } from "../../lib/settings";
 import { isGeoAllowed, recipientGeoWhitelist } from "../../lib/geo";
@@ -182,7 +183,13 @@ async function bundleProps({ params, query, req, res }) {
   //    it never bypasses that check.
   if (query.grant) {
     const payload = verifyGrant(query.grant, { token: bundleToken });
-    if (payload) {
+    // Single-use, same rules as the per-video gate — see the matching
+    // comment in pages/watch/[token].js and lib/singleUse.js. Spending this
+    // one grant is what mints the whole cookie set below, so replaying it
+    // must not re-mint them.
+    const spent = payload ? await isGrantSpent(query.grant) : false;
+    if (payload && !spent) {
+      await markGrantSpent(query.grant, payload.x);
       const members = await getBundleMembers(bundle.tokens);
       const proto =
         req.headers["x-forwarded-proto"] ||

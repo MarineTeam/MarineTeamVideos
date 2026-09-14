@@ -37,6 +37,27 @@ invite. The list itself stores only membership (email, token, when added) —
 each entry's status (active/expired/revoked) is always read live from its
 own share record, never duplicated, so it can never go stale.
 
+### Note to recipients
+Both Share forms (single and bulk) take an optional short note, which opens
+the notification email above the links. It's stored on each share record it
+created, shown under the video title in the admin table, and escaped
+everywhere it's rendered. Capped at 500 characters so a stray paste can't
+bloat every record and email built from it.
+
+### View limit
+A share can optionally carry a maximum number of views. It's enforced on the
+server next to the revoked and expired checks, so a spent link never even
+reaches the email gate, and the admin table shows the count against the cap
+(`3× / 3`) with a "Used up" status. Views are counted per authorized page
+render, exactly as the Views column always has — so the cap counts openings,
+not plays. Leaving it blank means unlimited, which is how every share made
+before this existed behaves.
+
+One limitation worth knowing: **Extend gives more time, not more views.**
+Extending a share that's used up moves its expiry but leaves the view count
+where it is, so the link stays used up. To give someone more views, share the
+video to them again — which mints a fresh link, as it always has.
+
 ### Viewer groups
 Named, admin-editable lists of emails (e.g. "Team A", "External
 Reviewers") that stand in for retyping the same recipients into every
@@ -115,9 +136,34 @@ recipient's cookie (if they had one) is checked against the live record on
 every request, so revocation takes effect even mid-session. Revoking is
 idempotent: revoking an already-revoked link succeeds without complaint.
 
+### Single-use magic links
+A sign-in link works once. The moment it's exchanged for the viewing cookie
+it's marked spent (by hash, never stored raw), so an intercepted or
+forwarded link can't be replayed inside its 15-minute window. A replayed
+link is deliberately indistinguishable from an expired one — the same "enter
+your email to get a new one" form — so it never reveals whether a link was
+ever real. Only the cookie-setting exchange spends a grant; no other path
+does. If the store is unreachable the check fails open, degrading to the
+previous replayable-within-15-minutes behaviour rather than locking out a
+recipient holding a valid link.
+
 ### Rate limiting
 Requesting a magic link for the same share is throttled to one per 30
-seconds, so the gate can't be used to spam a recipient's inbox.
+seconds, so the gate can't be used to spam a recipient's inbox. Separately,
+each source IP is capped per minute across *all* links, which closes the gap
+the per-share throttle left open: one sender spraying many different tokens.
+Over-limit requests return the identical response as every other outcome, so
+rate limiting never becomes a way to tell which links are real. Both the
+missing-IP case (local dev, non-proxied hosts) and a store failure fail open.
+
+### Timing-safe admin credentials
+The admin Basic Auth comparison is constant-time. Both the username and
+password halves are always evaluated, so a correct username with a wrong
+password costs exactly as much as a wrong username, and neither reveals
+through response timing how much of a guess was right. The check runs on the
+Edge runtime, where Node's `timingSafeEqual` isn't available, so it uses a
+random-key double-HMAC comparison via WebCrypto instead. Unset credentials
+mean nobody gets in, exactly as before.
 
 ### Geo location whitelist
 An optional list of allowed countries (ISO 3166-1 alpha-2 codes) applied to
@@ -224,6 +270,39 @@ blocks the rest):
   from Active, on purpose, so this is always a deliberate second step after
   Revoke, not a shortcut around it.
 
+## Finding and exporting shares
+
+The shares table is searched, filtered and paged on the server. Search
+matches recipient email or video title; the status filter covers active,
+expired, used up, revoked, and "email failed"; results are paged (50 per
+page) so the browser only ever holds and renders the rows on screen. The
+count line shows how many matched out of the total.
+
+Whatever the current filter selects can be exported as CSV, including every
+tracking column (views, plays, furthest progress, completion) plus the note
+and view cap. Cells that a spreadsheet would otherwise interpret as formulas
+are prefixed as text, so a video title or note can never execute on open.
+
+Honest note on cost: paging cuts the response size and the work the browser
+does, which is what actually hurts as shares accumulate. It does not cut the
+number of store reads — ordering newest-first and filtering by recipient or
+title both need fields that live inside the records themselves, and there is
+no secondary index carrying them. Cutting the reads needs a sorted index,
+which is a separate change.
+
+## Access requests on expired links
+
+An expired link used to be a dead end. Now the recipient can enter their
+address there to ask the owner for more time, which emails the address in
+`ADMIN_NOTIFY_EMAIL`; the owner uses Extend and the recipient's original link
+keeps working. Deliberate limits: it's offered for expired links only and
+never for a revoked one (revocation is a decision, not something to appeal),
+it carries no free-text message from the requester (a public endpoint that
+forwarded arbitrary prose would be a channel into the owner's inbox), it
+only mails when the typed address matches the record, it's throttled to one
+per share per hour plus the same per-IP cap as the gate, and it answers with
+a uniform response in every case.
+
 ## Delivery failure handling
 
 If a notification email fails to send (bad SMTP creds, a Resend outage,
@@ -250,13 +329,25 @@ tell "opened" from "actually watched."
 Shown in the Watched column as `—` (never played) / `started` / `NN%` /
 `100% ✓`.
 
+### First-play notification
+Optionally (Settings → Notifications), get an email the first time a
+recipient actually plays a given share — keyed off the record having no
+previous play, so it fires at most once per share for the life of that
+share, never per view. Off by default, and inert without a notification
+address configured. A failure to send is logged and swallowed: playback
+tracking is fire-and-forget and must never break because mail is down.
+
 ### Per-video analytics
 A collapsible **Analytics** panel on the admin page rolls the per-share
 tracking above up per video: how many times it was shared, to how many
 distinct recipients, total views, how many recipients started it, how many
 completed it (with the completion rate), and the average furthest progress.
 It's computed entirely from the tracking already stored on each share — no
-extra data is collected for it.
+extra data is collected for it. The rollup is computed on the server
+(`/api/analytics`) over every share, deliberately not in the browser from the
+rows currently on screen — now that the shares table is paged, doing it
+client-side would quietly report "analytics for the latest 50 shares" while
+looking like analytics for everything.
 
 ## Resume playback
 
@@ -281,6 +372,11 @@ change, not a code change.
 - **Cleanup** — a single admin action (or scheduled job) purges revoked and
   expired share records and their associated bundle records once nothing
   in them is still valid. Active shares are never touched.
+- **Tests** — `npm test` runs a `node --test` suite covering the gate crypto,
+  single-use grants, per-IP limiting, Bunny pagination, watermark resolution,
+  email parsing, share filtering/paging, and CSV escaping. No env vars or
+  network needed. They're unit tests: the live email and playback paths are
+  still covered only by the manual procedures in the project skills.
 - **`.claude/skills/`** — this repo ships a project-specific skill library
   documenting its architecture, security invariants, operating runbook,
   debugging playbook, and roadmap, intended to let an AI coding session (or

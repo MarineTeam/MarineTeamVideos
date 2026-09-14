@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { kvGet, kvSet } from "../../lib/kv";
 import { generateEmbedUrl } from "../../lib/bunny";
 import { signGrant, verifyGrant } from "../../lib/gate";
+import { isGrantSpent, markGrantSpent } from "../../lib/singleUse";
 import { getSettings, getVideoWatermark, resolveWatermark } from "../../lib/settings";
 import { isGeoAllowed, recipientGeoWhitelist } from "../../lib/geo";
 import { runWithMonitor, getMonitorSnapshot } from "../../lib/monitor";
@@ -18,6 +19,7 @@ export default function WatchPage({
   watermarkText,
   resumeSec,
   durationSec,
+  canRequestAccess,
   monitor,
 }) {
   if (status === "invalid") {
@@ -26,6 +28,7 @@ export default function WatchPage({
         <div className="recipient-card">
           <h2 style={{ marginTop: 0 }}>This link isn't available</h2>
           <p style={styles.muted}>{reason}</p>
+          {canRequestAccess && <RequestAccess token={token} />}
         </div>
         <QueryMonitorBar data={monitor} />
       </div>
@@ -53,6 +56,59 @@ export default function WatchPage({
     <>
       <EmailGate token={token} title={title} notice={notice} />
       <QueryMonitorBar data={monitor} />
+    </>
+  );
+}
+
+// Shown only under an EXPIRED link (never a revoked or unknown one — see
+// the getServerSideProps branch that sets canRequestAccess). Lets the
+// recipient ask the owner for more time instead of the page being a dead
+// end. The response is deliberately the same whatever happens server-side,
+// so this form can't be used to probe whose address a link belongs to.
+function RequestAccess({ token }) {
+  const [email, setEmail] = useState("");
+  const [state, setState] = useState("idle");
+
+  async function submit(e) {
+    e.preventDefault();
+    setState("sending");
+    try {
+      await fetch("/api/watch/request-access", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token, email }),
+      });
+    } catch {}
+    setState("sent");
+  }
+
+  if (state === "sent") {
+    return (
+      <p style={styles.muted}>
+        If that email matches this link, we've let the owner know. They can
+        extend it without changing the link you already have.
+      </p>
+    );
+  }
+
+  return (
+    <>
+      <p style={styles.muted}>Need more time? Ask the owner to extend it.</p>
+      <form onSubmit={submit} style={styles.form}>
+        <input
+          type="email"
+          required
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          placeholder="you@email.com"
+          className="input"
+          style={{ flex: "1 1 240px" }}
+          aria-label="Your email address"
+        />
+        <button type="submit" disabled={state === "sending"} className="btn btn-primary">
+          {state === "sending" ? "Sending..." : "Request more time"}
+        </button>
+      </form>
     </>
   );
 }
@@ -357,7 +413,26 @@ async function watchProps({ params, query, req, res }) {
     return { props: { status: "invalid", reason: "Access to this video has been revoked." } };
   }
   if (Date.now() > record.expiresAt) {
-    return { props: { status: "invalid", reason: "This link has expired." } };
+    return {
+      props: {
+        status: "invalid",
+        reason: "This link has expired.",
+        // Only an EXPIRED link offers the "ask for more time" form. A
+        // revoked one deliberately does not: revocation is an explicit
+        // decision by the admin, and inviting the recipient to appeal it
+        // would undercut that. A missing record can't offer it either —
+        // there is no recipient address to verify an asker against.
+        token,
+        canRequestAccess: true,
+      },
+    };
+  }
+  // Optional per-share view cap (record.maxViews), enforced next to
+  // revoked/expired so a spent link never even reaches the email gate.
+  // Absent on every record created before this feature, which therefore
+  // behaves exactly as before: unlimited views.
+  if (record.maxViews && (record.viewCount || 0) >= record.maxViews) {
+    return { props: { status: "invalid", reason: "This link has reached its view limit." } };
   }
 
   const settings = await getSettings();
@@ -370,7 +445,15 @@ async function watchProps({ params, query, req, res }) {
   //    grant doesn't linger in the address bar or browser history.
   if (query.grant) {
     const payload = verifyGrant(query.grant, { token });
-    if (payload) {
+    // A magic link is single-use (lib/singleUse.js). An already-spent grant
+    // is treated EXACTLY like an expired one — same fall-through, same
+    // notice — so a replay attempt is indistinguishable from a stale link
+    // and reveals nothing about whether the grant was ever real.
+    const spent = payload ? await isGrantSpent(query.grant) : false;
+    if (payload && !spent) {
+      // Spend it at the moment of the cookie-setting exchange, never on any
+      // other path (see lib/singleUse.js for why this placement matters).
+      await markGrantSpent(query.grant, payload.x);
       const cookieGrant = signGrant({
         token,
         email: record.email,
