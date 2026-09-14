@@ -181,19 +181,33 @@ test("the emailed grant is bound to its own share and short-lived", async () => 
 });
 
 test("the host assertion above actually bites", () => {
-  // Guard the guard. The previous version of the SITE_URL test used
-  // substring containment, which PASSES on this body while the link it
-  // describes points at an attacker's host — so the test would have been
-  // green while the property it claimed was violated. Assert that the
-  // replacement detects exactly that, or the next person has no way to know
-  // the check is real. (Same lesson as the base64url tamper case: a test is
-  // only as good as the thing it actually distinguishes.)
+  // Guard the guard: prove urlHostsIn DISCRIMINATES, so the SITE_URL test
+  // above cannot quietly become a check that passes everything.
+  //
+  // Background, since it is the reason that test was rewritten: it used to
+  // assert `body.includes("https://videos.test/watch/")`, which is TRUE for
+  // the poisoned body below even though the only link in it points at an
+  // attacker's host. The guard could have been green while the property it
+  // claimed was violated. (Same lesson as the base64url tamper case: a test
+  // is only as good as what it actually distinguishes.)
+  //
+  // Note for anyone tempted to also assert that the old substring form
+  // passes: don't. Such an assertion compares two string literals, so it
+  // can never fail and tests no project code — and CodeQL correctly flags
+  // any literal instance of that pattern as incomplete URL substring
+  // sanitization, which it will keep doing forever. The comment carries the
+  // explanation; the assertions below carry the proof.
   const poisoned = "Watch here:\nhttps://evil.example.com/x?next=https://videos.test/watch/abc";
-  assert.ok(poisoned.includes("https://videos.test/watch/"), "the OLD check would pass this");
-  assert.deepEqual(urlHostsIn(poisoned), ["evil.example.com"], "the NEW check catches it");
+  assert.deepEqual(urlHostsIn(poisoned), ["evil.example.com"], "a URL nested in a query must not launder the host");
 
   const clean = "Watch here:\nhttps://videos.test/watch/abc?grant=xyz";
   assert.deepEqual(urlHostsIn(clean), ["videos.test"]);
+
+  const mixed = "One: https://videos.test/watch/a\nTwo: https://evil.example.com/watch/b";
+  assert.deepEqual(urlHostsIn(mixed), ["videos.test", "evil.example.com"], "every link is inspected, not just the first");
+
+  const lookalike = "https://videos.test.evil.example.com/watch/abc";
+  assert.deepEqual(urlHostsIn(lookalike), ["videos.test.evil.example.com"], "a suffix lookalike is a different host");
 });
 
 test("the magic link points at this app's SITE_URL, never a request Host", async () => {

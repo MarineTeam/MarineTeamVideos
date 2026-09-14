@@ -567,9 +567,32 @@ to prove was violated. Fixed by extracting every absolute URL from the body
 and asserting on its PARSED host, which is both CodeQL-clean and strictly
 stronger than what it replaced.
 
-A `the host assertion above actually bites` test now pins it: it asserts
-that the OLD substring check passes the poisoned body and the NEW parsed
-check rejects it. Without that, nobody could tell the replacement was real.
+A `the host assertion above actually bites` test now pins it, by proving
+the parsed check DISCRIMINATES: a host laundered through a query parameter,
+a clean link, several links in one body, and a suffix lookalike
+(`videos.test.evil.example.com`) — that last one guards against anyone
+"simplifying" the check back to substring or suffix matching later.
+
+**A third alert, and this one was a genuine false positive — handled
+differently.** The first version of that bites-test also asserted that the
+OLD substring form passes the poisoned body, to show the contrast. CodeQL
+flagged that line too, and correctly: it is a literal instance of the weak
+pattern, and the rule cannot distinguish USING a weak check from
+DEMONSTRATING that one is weak. Dismissal was available (Episode 11's
+precedent). But re-reading the line on its own merits settled it without
+needing the scanner's opinion: it compared two string literals in the same
+function, so it could never fail and tested no project code. It was
+narrative decoration shaped like a test. Removed; the comment carries the
+explanation and the real assertions carry the proof.
+
+**Do not reintroduce a literal demonstration of the weak form** — the rule
+will fire on it every scan, forever, and the assertion was never worth
+anything. Three CodeQL episodes now, with three different correct answers:
+benchmark and dismiss (Episode 11's ReDoS), fix because the finding is right
+(the substring guard), and delete because the flagged line should not have
+existed (this one). The reusable discipline is the same each time: read your
+own code, decide on its merits, and let the alert be the prompt rather than
+the verdict.
 
 **This is the second time in one session that a test was green for the wrong
 reason** — the first was the base64url tamper case earlier in this episode.

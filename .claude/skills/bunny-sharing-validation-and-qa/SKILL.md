@@ -256,7 +256,17 @@ in production depended on them — but the assertion really was weak:
 `https://evil.example.com/x?next=https://videos.test/watch/abc`, the exact
 host-header-poisoning shape the test guards against. Now every absolute URL
 in the body is extracted and its PARSED host asserted, with a companion test
-proving the old check passed the poisoned body and the new one does not.
+proving the parsed check discriminates — a host laundered through a query
+parameter, several links in one body, and a suffix lookalike.
+
+A follow-up alert fired on that companion test, because its first version
+also asserted the OLD substring form passes the poisoned body. That one was
+a true false positive — the rule cannot tell a demonstration from a use —
+but the line deserved deleting anyway: it compared two string literals, so
+it could never fail and tested no project code. **A test that cannot fail is
+not a test.** Do not reintroduce a literal demonstration of a weak pattern
+to make a point; put the point in a comment and spend the assertion on
+something that runs project code.
 Take a scanner finding as a prompt to re-read your own assertion, not as a
 verdict to accept or dismiss — Episode 11's ReDoS alert was correctly
 dismissed after a benchmark; this one was correctly acted on after a read.

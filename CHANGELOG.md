@@ -278,12 +278,23 @@ Nine version tags mark points release notes were cut from this history:
   absolute URL in the body is now extracted and its parsed host asserted,
   plus the link's origin and path checked exactly.
 
-  A companion test pins that the replacement is real: it asserts the old
-  substring check passes the poisoned body and the new parsed check rejects
-  it. This is the second test in this release found green for the wrong
-  reason, after the base64url tamper case, so the general rule is now
-  recorded in the project skills — when a test claims to reject something,
-  prove it rejects it.
+  A companion test pins that the replacement is real by proving the parsed
+  check discriminates: a host laundered through a query parameter, several
+  links in one body, and a suffix lookalike such as
+  `videos.test.evil.example.com`, which guards against anyone simplifying
+  the check back to substring or suffix matching later.
+
+  A third alert then fired on that companion test, whose first version also
+  asserted that the old substring form passes the poisoned body. That one
+  was a genuine false positive — the rule cannot distinguish demonstrating a
+  weak pattern from using one — but the line was deleted rather than
+  dismissed, because it compared two string literals and so could never
+  fail. A test that cannot fail is not a test.
+
+  This is the second test in this release found green for the wrong reason,
+  after the base64url tamper case, so the general rule is now recorded in
+  the project skills — when a test claims to reject something, prove it
+  rejects it, and spend assertions on code that actually runs.
 
 ### Verified
 - `npm run build` clean; all new routes register (`/api/shares/export`,
