@@ -319,6 +319,33 @@ in the admin table ("⚠ email failed", with the underlying error shown on
 hover) instead of silently existing with nobody told about it. Fix the
 mailer configuration and hit Resend to deliver it.
 
+## Audit log
+
+Every time someone actually passes the email gate and receives a viewing
+cookie — on a single video page or a bundle page — one entry is recorded:
+when, which share, the visitor's IP, and a fingerprint of the verified email.
+Read it from `/api/gate-log` (admin only, newest first). This answers the
+question view counters cannot: not "how many times was this opened" but "who
+got in, when, and from where".
+
+Three deliberate properties:
+
+- **The email is fingerprinted, never stored in clear.** The share record
+  already holds the address, so identity is one lookup away. Storing it again
+  would make the log a second place personal data accumulates, under a
+  different retention rule. The fingerprint still lets you confirm an
+  exchange was the intended recipient, or spot one person across several
+  shares.
+- **Entries expire after 90 days.** A log that grows forever is an
+  operational trap, and so is an ever-growing pile of IP addresses. An empty
+  log for an old incident means the window passed, not that nothing happened.
+- **Writing is best-effort.** A logging failure can never break a
+  recipient's sign-in, so a gap in the log is possible. A gap is visible and
+  diagnosable; a failed sign-in is a support ticket.
+
+There is deliberately no panel for this on the admin page: forensics is rare
+and investigative, and the dashboard is already dense.
+
 ## Tracking
 
 ### View tracking

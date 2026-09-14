@@ -212,11 +212,35 @@ Nine version tags mark points release notes were cut from this history:
   to remove a cap or add one to an existing share; both are policy changes
   rather than grants and neither has been asked for.
 
+- **Audit log of grant exchanges** (`lib/gateLog.js`, read at
+  `/api/gate-log`). The last unbuilt item on the gate campaign's hardening
+  menu apart from the deliberately-fenced OTP fallback. Every exchange of a
+  magic-link grant for a viewing cookie, on either entrance, records when,
+  which share, the IP, and a fingerprint of the verified email. Answers the
+  question view counters cannot: who got in, when, and from where.
+
+  Built close to the menu's sketch with three tightenings. The key carries a
+  random suffix, because a bare timestamp collides when two exchanges land in
+  the same millisecond and a colliding write silently destroys an audit
+  entry. Entries expire after 90 days, because append-only-forever in this
+  store has no retention story and would accumulate IP addresses
+  indefinitely. Writes never throw, because a logging outage that blocks a
+  legitimate sign-in is strictly worse than a gap in the log.
+
+  The email is hashed rather than stored, as the menu specified: the share
+  record already holds the address, so the log holds strictly LESS than the
+  records it points at rather than becoming a second store of personal data
+  under its own retention rule. `pages/api/cleanup.js` sweeps orphaned index
+  members, the same self-healing it already does for shares and bundles.
+
+  No admin-page UI, deliberately. Forensics is rare and investigative, and
+  the dashboard is already dense; the runbook documents the curl.
+
 ### Verified
 - `npm run build` clean; all new routes register (`/api/shares/export`,
   `/api/watch/request-access`, `/api/analytics`), `Proxy (Middleware)` still registers with the
   async middleware.
-- `npm test` — 129/129 passing, stable across repeated runs (the base64url
+- `npm test` — 139/139 passing, stable across repeated runs (the base64url
   flake above was found this way). The view-cap round trip is proven end to
   end: a used-up share refused by the real access decision, the cap raised
   through the real route, and the SAME token then passing the gate.

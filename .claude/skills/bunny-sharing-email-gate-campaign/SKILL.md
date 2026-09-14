@@ -210,17 +210,27 @@ observation log lives. The campaign is then complete.
    predicate still partly unmet:** that is against an in-memory double, so
    a live test of >N requests/min from a real edge, and the non-atomic
    counter's behaviour under real concurrency, remain unmeasured.
-3. **Cookie/grant lifetime tuning.** NOW THE TOP UNBUILT ITEM alongside 4.
+3. **Cookie/grant lifetime tuning.** NOW THE ONLY UNBUILT ITEM except the
+   deliberately-fenced OTP fallback (5).
    Note the new interaction: magic links became single-use in item 1, so
    shortening cookie life means more round-trips through a one-shot
    credential. Decide 1 and 3 together, not independently. Cookie currently lives until share
    expiry (up to caller-chosen hours); consider capping cookie Max-Age
    (e.g. 24 h) forcing periodic re-verification. Pure policy choice;
    validation: cookie expiry observed in devtools; UX cost acknowledged.
-4. **Audit log of grant exchanges.** Append-only KV entries
-   (`gatelog:<ts>`) on each exchange: token, hashed email, IP. Enables
-   incident forensics. Validation: entries appear on each exchange; no PII
-   beyond what records already hold.
+4. **Audit log of grant exchanges. — BUILT 2026-09-13, NOT YET CERTIFIED
+   LIVE.** `lib/gateLog.js`, read at `/api/gate-log`. Built close to this
+   sketch with three tightenings, each explained in roadmap item (n): the
+   key carries a random suffix so same-millisecond exchanges cannot
+   overwrite one another; entries expire after 90 days rather than
+   accumulating forever; and writes never throw, so the log can never break
+   a sign-in. The email is hashed as specified, so the "no PII beyond what
+   records already hold" predicate is met by construction — the log holds
+   strictly LESS than the records do. **Validation predicate still unmet:**
+   "entries appear on each exchange" is proven against in-memory doubles,
+   never on a deployment. Check it during P3: complete a real gate flow,
+   then `curl -u admin /api/gate-log` and confirm the entry, its IP, and
+   that the fingerprint matches the recipient on the share record.
 5. **OTP fallback.** Previously considered and NOT chosen for v1 (see
    bunny-sharing-failure-archaeology — magic link won; OTP remains a valid
    alternative where corporate mail mangles links). Only pursue on real user

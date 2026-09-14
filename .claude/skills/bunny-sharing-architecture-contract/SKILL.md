@@ -223,6 +223,33 @@ suggestions; they are the reasons the system is safe and simple.
   exactly one definition of the `gate_<token>` cookie in the repo; verify
   with `grep -rn "gate_\${token}" lib pages`.
 
+### 2.4b Grant exchanges are audited; the log holds LESS than the records (2026-09-13)
+
+- **Decision**: every grant→cookie exchange, on either entrance, writes one
+  `gatelog:<padded-ms>-<rand>` entry — `{at, kind, token, emailHash, ip}` —
+  via `recordGrantExchange()` (`lib/gateLog.js`). Read admin-only at
+  `/api/gate-log`, newest first.
+- **Why the email is hashed**: the share record already holds the address,
+  so identity is one lookup away from the token. Storing it again here
+  would make the log a SECOND place personal data accumulates, under a
+  different retention rule and a different access path. The fingerprint
+  still answers the questions a log exists for — was this the intended
+  recipient (compare to the record) and did one person exchange across
+  several shares (compare hashes). Net: the log holds strictly less than
+  the records it points at.
+- **Why entries expire**: 90 days, because "append-only forever" in this KV
+  store has no retention story — unbounded growth plus an ever-growing pile
+  of IP addresses. One constant (`LOG_TTL_SECONDS`) governs it.
+- **Why the key has a random suffix**: a bare timestamp collides when two
+  exchanges land in the same millisecond, and a colliding write silently
+  destroys an audit entry. A log that can lose entries invisibly is worse
+  than no log.
+- **What breaks**: making the write throwable would let a logging outage
+  block a legitimate recipient's sign-in — strictly worse than a gap in the
+  log, which is at least visible and diagnosable. Storing the plaintext
+  address would reintroduce the second-PII-store problem this design
+  avoids. Removing the random suffix reintroduces silent entry loss.
+
 ### 2.5 Share record in KV is the truth; the Bunny embed URL is a second, short-lived signing layer
 
 - **Decision**: Authorization lives in the KV record. Playback uses a
@@ -568,6 +595,7 @@ behaviour rather than blocking anyone:
 | `gateused:<sha256(grant)>` | `1`, TTL = the grant's own remaining life | `lib/singleUse.js`, from the grant exchange in both gate pages | Single-use magic links (section 2.2's bounded exception). Keyed by HASH, never the raw grant |
 | `gateip:<ip>` | request count, `EX=60` | `lib/rateLimit.js`, from both public request-link endpoints | Per-IP dampener, 10/min. Non-atomic read-modify-write by design |
 | `accessreq:<token>` | `1`, `EX=3600` | `pages/api/watch/request-access.js` | One access request per expired share per hour |
+| `gatelog:<padded-ms>-<rand>` | the exchange entry, `EX=90 days` | `lib/gateLog.js`, from the exchange in both gate pages | Audit log of grant exchanges (2.4b). Indexed by `gatelog-index`; `cleanup.js` sweeps orphaned members |
 
 ### 5.1a Bundle record — KV key `bunnybundle:<bundleId>`
 

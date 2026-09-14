@@ -776,9 +776,49 @@ repo / "you have a result when…". All are CANDIDATES — none is scheduled wor
   deleted member simply disappearing, and that a stray `revoked` field on a
   bundle record is ignored rather than silently honoured.
 
-### (n) Audit log of grant exchanges — OPEN
-- Owned by the campaign's hardening menu item 4. Now the highest-ranked
-  UNBUILT hardening item, since items 1 and 2 shipped 2026-09-13.
+### (n) Audit log of grant exchanges — ADOPTED 2026-09-13
+- **Was:** the campaign's hardening menu item 4, and the highest-ranked
+  unbuilt hardening item once items 1 and 2 shipped.
+- **What shipped:** `lib/gateLog.js` — `recordGrantExchange()` writes one
+  `gatelog:<padded-ts>-<rand>` entry at the moment a grant is exchanged for
+  a cookie, on BOTH entrances (the watch page and the bundle page), plus a
+  `gatelog-index` set. `readRecentExchanges(limit)` returns them newest
+  first. Admin-only read at `/api/gate-log`. `pages/api/cleanup.js` sweeps
+  orphaned index members, the same self-healing it already does for the
+  share and bundle indexes.
+- **Four decisions that deviate from or tighten the menu's sketch, each
+  worth keeping:**
+  1. **The email is HASHED, never stored in clear.** The menu said hashed
+     and it was right: the share record already holds the address, so
+     identity is one lookup away, and storing it again would make the log a
+     second place PII accumulates under a different retention rule. The
+     hash still answers what a log is for — was this the intended
+     recipient, and did one person exchange across several shares.
+  2. **The key carries a random suffix**, not just a timestamp as the menu
+     sketched. Two exchanges in the same millisecond would otherwise
+     collide, and a colliding write silently destroys an audit entry — the
+     one thing a log must never do. There is a test for exactly this.
+  3. **Entries expire (90 days).** "Append-only forever" in a KV store with
+     no retention story is an operational trap: unbounded growth plus an
+     ever-growing pile of IP addresses. A rolling window is honest about
+     what this is for. One constant to change if a retention policy says
+     otherwise.
+  4. **Writes never throw.** An audit log that can break a legitimate
+     recipient's sign-in is worse than a gap in the log. A gap is visible
+     and diagnosable; a failed exchange is a support ticket.
+- **Deliberately NO admin-page UI.** The forensics question is rare and
+  investigative; putting it on the busiest page would add clutter and a new
+  failure surface for a view nobody needs day to day. The runbook documents
+  the curl. Revisit only if someone actually asks.
+- **Verified:** `npm run build` clean, route registered; suite 129 → 139.
+  `tests/gateLog.test.mjs` proves the plaintext address appears nowhere in
+  the store, same-millisecond entries both survive, reads come back newest
+  first, limits clamp, expired entries are swept from the index, a store
+  failure does not throw, and the endpoint neither leaks addresses nor
+  accepts non-GET.
+- **Not yet exercised:** no live pass. The menu's validation predicate
+  ("entries appear on each exchange") is proven at the unit level against
+  in-memory doubles, not against a deployment.
 
 ### (o) Cookie/grant lifetime tuning — OPEN
 - Owned by the campaign's hardening menu item 3. Pure policy choice; nobody

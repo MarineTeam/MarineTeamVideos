@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { kvGet, kvSet } from "../../lib/kv";
 import { generateEmbedUrl } from "../../lib/bunny";
 import { isGrantSpent, markGrantSpent } from "../../lib/singleUse";
+import { recordGrantExchange } from "../../lib/gateLog";
+import { clientIp } from "../../lib/rateLimit";
 import { getSettings } from "../../lib/settings";
 import { decideWatchAccess } from "../../lib/watchAccess";
 import { isGeoAllowed, recipientGeoWhitelist } from "../../lib/geo";
@@ -436,6 +438,15 @@ async function watchProps({ params, query, req, res }) {
     // Spend the grant at the moment of the cookie-setting exchange, never on
     // any other path (see lib/singleUse.js for why that placement matters).
     await markGrantSpent(decision.spend.grant, decision.spend.expiresAt);
+    // Audit the moment access was actually granted (lib/gateLog.js).
+    // Best-effort by construction — it never throws — so it cannot turn a
+    // legitimate sign-in into a failure.
+    await recordGrantExchange({
+      kind: "watch",
+      token: token,
+      email: record.email,
+      ip: clientIp(req),
+    });
     res.setHeader("Set-Cookie", decision.setCookie);
     return { redirect: { destination: decision.redirectTo, permanent: false } };
   }

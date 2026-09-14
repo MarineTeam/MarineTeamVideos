@@ -360,6 +360,7 @@ rebuilds.
 | `gateused:<sha256(grant)>` | `1`, TTL = the grant's remaining life | `lib/singleUse.js` at the grant→cookie exchange | Makes already-used magic links replayable again for their remaining minutes. Harmless in practice, but it is the single-use protection, so do not flush casually |
 | `gateip:<ip>` | request count, `EX=60` | `lib/rateLimit.js` on all three public POST endpoints | Resets one sender's minute quota. Useful if you have rate-limited yourself while testing |
 | `accessreq:<token>` | `1`, `EX=3600` | `pages/api/watch/request-access.js` | Lets a recipient re-request access on that share before the hour is up |
+| `gatelog:<padded-ms>-<rand>` | the exchange entry, `EX=90 days` | `lib/gateLog.js` at each grant exchange | Destroys audit history. This is the one here you should NOT flush casually — it is evidence, not a protection |
 
 Operationally the one you will actually reach for is `gateip:<ip>` — testing
 the gate repeatedly from one machine WILL trip the 10/min cap, and the
@@ -467,6 +468,36 @@ Extend. Things to know before reaching for it:
 - Extend and this are independent: a share can be live on time and used up
   on views, or vice versa. Check which limit actually stopped it before
   picking an action.
+
+### Read the gate audit log (added 2026-09-13)
+
+Every time someone actually passes the email gate and receives a cookie —
+on a `/watch` page or a `/bundle` page — one entry is written. Use it to
+answer "who got in, when, from where" after a leak or a complaint.
+
+```bash
+curl -s -u "$ADMIN_USER:$ADMIN_PASS" "$SITE_URL/api/gate-log?limit=50" | jq .
+# {"exchanges":[{"at":1757..., "kind":"watch", "token":"<token>",
+#                "emailHash":"9f2a...", "ip":"203.0.113.7"}], "count":1}
+```
+
+Reading it:
+
+- **Emails appear only as a fingerprint.** To turn one into an identity,
+  look up the share record for that token (`kv-inspect --token <token>`).
+  The log deliberately holds less than the records do — see
+  architecture-contract 2.4b.
+- **To check whether an exchange was the intended recipient**, fingerprint
+  the record's address and compare:
+  `node -e 'import("./lib/gateLog.js").then(m=>console.log(m.emailFingerprint("them@example.com")))'`
+- **To spot one person across several shares**, group by `emailHash`.
+- **`kind`** is `watch` or `bundle`; a bundle exchange mints cookies for
+  every member, so one bundle entry can explain access to many videos.
+- **Entries expire after 90 days.** An empty log for an old incident means
+  the window passed, not that nothing happened.
+- **A gap is possible and is not tampering.** Log writes are best-effort by
+  design so they can never break a sign-in; a KV blip loses an entry while
+  the exchange itself succeeds.
 
 ### Run cleanup manually
 

@@ -1,6 +1,7 @@
 import { kvGet, kvDel, kvSrem, kvSmembers } from "../../lib/kv";
 import { SHARE_INDEX_KEY } from "../../lib/shares";
 import { BUNDLE_INDEX_KEY } from "../../lib/bundles";
+import { GATE_LOG_INDEX_KEY } from "../../lib/gateLog";
 import { withApiMonitor } from "../../lib/withMonitor";
 
 async function handler(req, res) {
@@ -48,6 +49,15 @@ async function handler(req, res) {
     });
     const bundleIndexOrphans = bundleEntries.filter(({ record }) => !record);
 
+    // Gate audit log (lib/gateLog.js). Its ENTRIES expire on their own TTL,
+    // so there is nothing to delete here — but the index members they leave
+    // behind would accumulate forever. Same self-healing sweep as above:
+    // drop any index member whose entry is already gone. Deliberately not
+    // counted in `deleted`, which reports records removed, not bookkeeping.
+    const logKeys = await kvSmembers(GATE_LOG_INDEX_KEY);
+    const logEntries = await Promise.all(logKeys.map((k) => kvGet(k)));
+    const logIndexOrphans = logKeys.filter((_, i) => !logEntries[i]);
+
     await Promise.all([
       ...shareToDelete.map(({ token }) =>
         Promise.all([kvDel(`bunnyshare:${token}`), kvSrem(SHARE_INDEX_KEY, token)])
@@ -57,6 +67,7 @@ async function handler(req, res) {
       ),
       ...shareIndexOrphans.map(({ token }) => kvSrem(SHARE_INDEX_KEY, token)),
       ...bundleIndexOrphans.map(({ id }) => kvSrem(BUNDLE_INDEX_KEY, id)),
+      ...logIndexOrphans.map((k) => kvSrem(GATE_LOG_INDEX_KEY, k)),
     ]);
 
     res.status(200).json({ deleted: shareToDelete.length + bundleToDelete.length });

@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { kvGet } from "../../lib/kv";
 import { isGrantSpent, markGrantSpent } from "../../lib/singleUse";
+import { recordGrantExchange } from "../../lib/gateLog";
+import { clientIp } from "../../lib/rateLimit";
 import { decideBundleAccess } from "../../lib/bundleAccess";
 import { getBundleMembers } from "../../lib/bundles";
 import { getSettings } from "../../lib/settings";
@@ -180,6 +182,15 @@ async function bundleProps({ params, query, req, res }) {
 
   if (decision.kind === "exchange") {
     await markGrantSpent(decision.spend.grant, decision.spend.expiresAt);
+    // Audit the moment access was actually granted (lib/gateLog.js).
+    // Best-effort by construction — it never throws — so it cannot turn a
+    // legitimate sign-in into a failure.
+    await recordGrantExchange({
+      kind: "bundle",
+      token: `bundle:${bundleId}`,
+      email: bundle.email,
+      ip: clientIp(req),
+    });
     res.setHeader("Set-Cookie", decision.setCookies);
     return { redirect: { destination: decision.redirectTo, permanent: false } };
   }
