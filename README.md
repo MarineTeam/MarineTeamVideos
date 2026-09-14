@@ -134,6 +134,8 @@ importing JSX would need a build dependency this project does without. See
 | `/api/share/resend-bulk` | POST | Resend for multiple shares in one call; reports success/failure per token |
 | `/api/share/extend` | POST | Extend a share's expiry in place (`{token, hours}`) — same link, longer validity. Works on an already-expired (not revoked) share. Refuses revoked shares. |
 | `/api/share/extend-bulk` | POST | Extend multiple shares in one call; reports success/failure per token |
+| `/api/share/allow-views` | POST | Raise a share's view limit in place (`{token, views}`) — same link, more views. Raises the cap and never resets the view count, so the record of how often it was actually opened survives. Refuses a revoked share (so it can't double as Restore) and an uncapped one (imposing a limit is a separate, deliberate action) |
+| `/api/share/allow-views-bulk` | POST | Raise the view limit on multiple shares in one call; reports success/failure per token |
 | `/api/cleanup` | POST | Delete expired or revoked share records, and bundle records that are either expired or have no live members left |
 | `/api/backfill-index` | POST | One-time migration: populates the share/bundle index sets from a full scan, for records that existed before the index did. Idempotent — safe to re-run. Also in the admin UI as "🔁 Rebuild index". |
 | `/api/watch/request-link` | POST | Public: verify a recipient's email against a share and email them a one-time magic link (excluded from admin Basic Auth) |

@@ -439,6 +439,35 @@ one bad token never blocks the others. If the token is part of a bundle
 (lib/bundles.js), that bundle's own `expiresAt` is extended too, so its
 listing page doesn't lapse before this member does.
 
+### Raise a share's view cap (added 2026-09-13)
+
+A share with a `maxViews` cap that has been opened that many times shows as
+"Used up" and stops rendering. To give the recipient more openings WITHOUT
+minting a new token:
+
+```bash
+curl -s -u "$ADMIN_USER:$ADMIN_PASS" -X POST "$SITE_URL/api/share/allow-views" \
+  -H 'Content-Type: application/json' \
+  -d '{"token":"<token>","views":5}'
+# {"ok":true,"maxViews":7,"viewCount":2}
+```
+
+Or "+ Views" on the row in the admin table; a bulk button sits beside
+Extend. Things to know before reaching for it:
+
+- It RAISES the cap, it does not reset the count. `viewCount` is the audit
+  trail and an analytics input, so it is never rewritten. The response tells
+  you both numbers.
+- It refuses a REVOKED share (`Cannot raise the view limit on a revoked
+  share`) — use Restore first if that is really what you want.
+- It refuses a share with NO cap (`This share has no view limit`) — that
+  share is already unlimited. There is deliberately no way to ADD a cap to
+  an existing share or to remove one; both are policy changes rather than
+  grants, and neither has been asked for.
+- Extend and this are independent: a share can be live on time and used up
+  on views, or vice versa. Check which limit actually stopped it before
+  picking an action.
+
 ### Run cleanup manually
 
 ```bash

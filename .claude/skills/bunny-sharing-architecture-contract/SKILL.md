@@ -421,6 +421,25 @@ suggestions; they are the reasons the system is safe and simple.
   let this endpoint be repurposed as a stealth-shorten, which is Revoke's
   job and should stay visible as such.
 
+### 2.8b Raising a view cap = grant more, never forget (added 2026-09-13)
+
+- **Decision**: `/api/share/allow-views` (`allowMoreViews`, mirrored in
+  `allow-views-bulk.js`) sets `maxViews = Math.max(maxViews, viewCount) +
+  views`. It NEVER touches `viewCount`.
+- **Why**: `viewCount` is simultaneously the audit trail of how often a
+  recipient opened the link and an input to the `/api/analytics` rollup.
+  Resetting it to revive a share would silently corrupt both and destroy
+  evidence — the same reasoning that makes Revoke a flag rather than a
+  delete (2.8) and makes `setEmailFailed` clear to `undefined` rather than
+  `false` (5.1). Raising the cap leaves the record readable as what it is.
+- **What breaks**: a "reset views" action would make the analytics rollup
+  and the per-share history lie, with no way to tell afterwards that it
+  happened. Allowing this on a REVOKED share would let a quota change
+  double as an un-revoke (the trap 2.8a already closes for Extend).
+  Allowing it on an UNCAPPED share would mean an endpoint named "allow
+  more" silently imposing a restriction — tightening access is always its
+  own visible action here.
+
 ### 2.9 `deliver()` is the single email chokepoint; provider is config, not code
 
 - **Decision**: All SIX senders route through one `deliver({to, subject,
@@ -477,7 +496,7 @@ scope decisions or unfinished hardening. "Candidate-fix" items live in
 | ~~No per-IP rate limiting~~ | Low | FIXED 2026-09-13 (`5eb7245`): `gateip:<ip>`, 10/min, on both public request-link endpoints. Coarse and non-atomic ON PURPOSE — a spam dampener, not a boundary; it can undercount under concurrency and fails open on any error |
 | No linter, no CI; tests exist but are unit-level only | Medium (process risk, not runtime risk) | Partly addressed 2026-09-13 (`5eb7245`): 50-case `node --test` suite. NO route-level, component-level, or live coverage, and nothing runs it automatically on push — bunny-sharing-validation-and-qa |
 | `/api/shares` and `/api/analytics` read EVERY share record per call | Low (cost/latency, not correctness) | Open — roadmap (m). Paging cut payload and browser work, not the KV read count |
-| A used-up `maxViews` share cannot be revived without a new token | Low | Open — roadmap (p). Extend moves `expiresAt` only; there is no cap-reset action |
+| ~~A used-up `maxViews` share cannot be revived without a new token~~ | — | FIXED 2026-09-13: `/api/share/allow-views` raises the cap in place, same token (2.8b) |
 | `share`/`share-bulk` store records BEFORE sending email; a send failure leaves a live record whose recipient never got the link | Low | Fixed 2026-07-20: failed sends are flagged (`emailFailed`/`emailError`, additive fields) instead of silently existing, and an admin "Resend" button re-sends and clears the flag — see section 5.1. Resend (`/api/share/resend`, `pages/api/share/resend.js` exporting `resendOne`) is not gated on `emailFailed` — any active share can be re-sent on demand, and `/api/share/resend-bulk` does the same for multiple selected shares in one call (admin selects rows via checkboxes in the shares table) |
 | The email gate has NOT been exercised against live Resend + a real inbox + prod Bunny/KV | High (unproven core flow) | Open — THE campaign: bunny-sharing-email-gate-campaign |
 | Revocation is not instant: an in-flight Bunny embed token stays valid up to 3600 s after revoke (section 2.5) | Low (bounded window, by design) | Accepted-for-now |
@@ -515,7 +534,7 @@ over the Upstash REST API (`lib/kv.js:19-22`).
 | `watermark` | boolean (optional) | Per-share watermark override (added post-1.1.0). Stored ONLY when explicitly `true`/`false`; ABSENT means "inherit the global default". Read by `resolveWatermark` (lib/settings.js) on the authorized watch render. Additive — absent on all older records, which inherit exactly as before |
 | `lastPositionSec` | number (optional) | Resume support (added post-1.1.0): furthest/most-recent playback position in seconds, written by `/api/watch/track` on the `position` event. Additive; last-writer-wins |
 | `durationSec` | number (optional) | Video duration in seconds, reported alongside `lastPositionSec`; lets the watch page suppress a resume offer near the end. Additive |
-| `maxViews` | number (optional) | Per-share cap on AUTHORIZED PAGE RENDERS (added 2026-09-13, `5eb7245`). Written ONLY when a positive integer was supplied — never `0`, which would read as "nobody may open this". Absent means unlimited, which is how every earlier record behaves. Enforced in `pages/watch/[token].js` beside revoked/expired, BEFORE the email gate, as `record.maxViews && (record.viewCount \|\| 0) >= record.maxViews`. It counts openings, not plays. Note the gap: nothing resets or raises it — see roadmap (p) |
+| `maxViews` | number (optional) | Per-share cap on AUTHORIZED PAGE RENDERS (added 2026-09-13, `5eb7245`). Written ONLY when a positive integer was supplied — never `0`, which would read as "nobody may open this". Absent means unlimited, which is how every earlier record behaves. Enforced in `pages/watch/[token].js` beside revoked/expired, BEFORE the email gate, as `record.maxViews && (record.viewCount \|\| 0) >= record.maxViews`. It counts openings, not plays. Raised (never reset) by `/api/share/allow-views` — see 2.8b |
 | `note` | string (optional) | Short admin-supplied message (added 2026-09-13, `5eb7245`), trimmed and capped at 500 chars by `normalizeNote` (lib/shares.js). Stored RAW, escaped at every render point (`escapeHtml` for email, React for the admin table) — never pre-escaped, so the stored value stays the literal text typed. Absent when blank |
 
 View fields are written by `pages/watch/[token].js` only on the AUTHORIZED

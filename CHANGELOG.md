@@ -189,12 +189,37 @@ Nine version tags mark points release notes were cut from this history:
   test asserting byte-identity. There is exactly one definition of the
   `gate_<token>` cookie in the repo.
 
+- **Raise a share's view cap** (`/api/share/allow-views`, plus a bulk form
+  and a "+ Views" button beside Extend). Closes the administration gap that
+  shipped alongside view caps in this same release: a "Used up" link had no
+  recovery short of re-sharing, which mints a new token and breaks the
+  recipient's existing link — the exact workflow Extend was added to
+  eliminate.
+
+  It RAISES the cap and never resets the count. That was the open design
+  question, and it resolves the way everything else in this repo does:
+  never destroy evidence. The view count is simultaneously the record of
+  how often a recipient opened the link and an input to the analytics
+  rollup, so zeroing it would quietly corrupt both. Raising the ceiling
+  leaves the record readable as what it is, and the response reports both
+  numbers.
+
+  Two deliberate refusals, each mirroring existing policy: a REVOKED share
+  is refused so a quota change can never double as an un-revoke, and an
+  UNCAPPED share is refused because imposing a limit is a tightening of
+  access, which in this codebase is always its own visible action rather
+  than a surprise from an endpoint named "allow more". There is still no way
+  to remove a cap or add one to an existing share; both are policy changes
+  rather than grants and neither has been asked for.
+
 ### Verified
 - `npm run build` clean; all new routes register (`/api/shares/export`,
   `/api/watch/request-access`, `/api/analytics`), `Proxy (Middleware)` still registers with the
   async middleware.
-- `npm test` — 119/119 passing, stable across repeated runs (the base64url
-  flake above was found this way).
+- `npm test` — 129/129 passing, stable across repeated runs (the base64url
+  flake above was found this way). The view-cap round trip is proven end to
+  end: a used-up share refused by the real access decision, the cap raised
+  through the real route, and the SAME token then passing the gate.
 - **Compatibility evidence for the watch-page extraction** (change-control
   class (c)): a record carrying ONLY the original 2026-07 fields — no
   `viewCount`, `watermark`, `maxViews`, `note`, `lastPositionSec` or

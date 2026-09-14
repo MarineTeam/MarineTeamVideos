@@ -786,7 +786,7 @@ repo / "you have a result when…". All are CANDIDATES — none is scheduled wor
   single-use, a shorter cookie life means more magic-link round-trips, each
   of which is now a one-shot credential. Decide them together.
 
-### (p) View-cap administration — OPEN (opened 2026-09-13)
+### (p) View-cap administration — ADOPTED 2026-09-13
 - **Why:** shares gained an optional `maxViews` cap (`5eb7245`), enforced in
   `pages/watch/[token].js` beside revoked/expired. But Extend moves
   `expiresAt` only — it does not touch `viewCount` — so a used-up share
@@ -801,6 +801,39 @@ repo / "you have a result when…". All are CANDIDATES — none is scheduled wor
   with the SAME token, URL and cookie.
 - **Result when:** a used-up share can be restored to working without a new
   token, and the admin table's "Used up" status clears.
+- **The design question in step (1) resolved to RAISE THE CAP, never reset
+  the count.** `viewCount` is the audit trail of how often a recipient
+  actually opened the link AND an input to the per-video analytics rollup;
+  zeroing it would quietly corrupt both. Raising the cap leaves the history
+  intact and readable as what it is — "they watched 3 times, I granted 2
+  more." This is the same never-destroy-evidence reasoning behind
+  revoke-is-a-flag (2.8) and setEmailFailed clearing to `undefined` rather
+  than `false`.
+- **What shipped:** `allowMoreViews({token, views})` exported from
+  `pages/api/share/allow-views.js`, deliberately shaped as extendOne's twin:
+  same `{token, ok, error}` result, same 404-vs-400 split, same
+  never-fail-the-batch sibling in `allow-views-bulk.js`, same
+  measure-from-where-it-actually-stands arithmetic
+  (`Math.max(maxViews, viewCount) + views`, mirroring
+  `Math.max(Date.now(), expiresAt) + addMs`). Admin UI: a "+ Views" button
+  on any non-revoked row that HAS a cap, and a bulk button beside Extend.
+- **Two deliberate refusals, both mirroring existing policy:** a REVOKED
+  share is refused, so this can never quietly double as Restore (exactly
+  item (i)'s reasoning for Extend); and an UNCAPPED share is refused,
+  because imposing a cap is a tightening of access, which in this codebase
+  is always its own visible action rather than a surprise from an endpoint
+  named "allow more".
+- **Verified:** `npm run build` clean, both routes registered; suite 119 →
+  129. `tests/routes.allowViews.test.mjs` proves the round trip end to end —
+  a used-up share is refused by `decideWatchAccess`, the cap is raised, and
+  the SAME token then passes the gate again — plus that `viewCount` is
+  preserved, that a share past its cap still gets exactly the granted
+  number, both refusals, non-positive/non-integer rejection, and the bulk
+  partial-success shape.
+- **Not yet exercised:** no live pass. Also unaddressed by design: there is
+  still no way to REMOVE a cap entirely or to add one to an uncapped share.
+  Both are "change the policy" rather than "grant more", and neither has
+  been asked for.
 
 ### (q) Bulk Restore — OPEN
 - Revoke, resend and extend all have bulk forms; Restore deliberately does

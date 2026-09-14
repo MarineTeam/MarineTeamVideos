@@ -53,10 +53,15 @@ render, exactly as the Views column always has — so the cap counts openings,
 not plays. Leaving it blank means unlimited, which is how every share made
 before this existed behaves.
 
-One limitation worth knowing: **Extend gives more time, not more views.**
-Extending a share that's used up moves its expiry but leaves the view count
-where it is, so the link stays used up. To give someone more views, share the
-video to them again — which mints a fresh link, as it always has.
+Extend gives more time, not more views — the two limits are separate. To
+give someone more views, use **+ Views** on the row (or on a selection of
+rows), which raises the cap in place: same link, same token, same cookie,
+just a higher ceiling. It deliberately raises the cap rather than resetting
+the count, so the record of how often the link was actually opened survives
+and the analytics stay honest; the message tells you both numbers ("raised
+to 5, 2 used so far"). It refuses a revoked share, so it can never quietly
+undo a Revoke, and it refuses a share that has no cap at all, since imposing
+a limit is a tightening of access rather than a grant.
 
 ### Viewer groups
 Named, admin-editable lists of emails (e.g. "Team A", "External
@@ -253,6 +258,9 @@ blocks the rest):
   the old expiry. Refuses to extend a revoked share, so it can never
   quietly double as an "un-revoke." If the share belongs to a bundle, the
   bundle's own expiry is extended to match.
+- **+ Views** — raise the view cap on a share that has one, so a "Used up"
+  link works again without minting a new token. Raises the ceiling, never
+  resets the count. Refuses revoked and uncapped shares.
 - **Revoke** — immediately cut off access. A flag flip, not a delete, and
   idempotent (revoking an already-revoked share is a no-op success).
 - **Restore** — undo a Revoke: flips the flag back, same token/URL/cookie as

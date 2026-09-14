@@ -18,6 +18,7 @@ export default function Admin() {
   const [resendingBulk, setResendingBulk] = useState(false);
   const [extendingBulk, setExtendingBulk] = useState(false);
   const [revokingBulk, setRevokingBulk] = useState(false);
+  const [allowingViewsBulk, setAllowingViewsBulk] = useState(false);
   // Per-share watermark override chosen in the share forms: "default" (inherit
   // the global setting), "on" (always), or "off" (never).
   const [watermark, setWatermark] = useState("default");
@@ -564,6 +565,53 @@ export default function Admin() {
     });
     const data = await res.json();
     setMessage(data.ok ? `Extended to ${new Date(data.expiresAt).toLocaleString()}` : `Error: ${data.error}`);
+    loadAll();
+  }
+
+  // The view-cap counterpart of extend(): raises the cap, never resets the
+  // count, so a "Used up" link works again without losing the record of how
+  // often it was actually opened.
+  async function allowMoreViews(token) {
+    const viewsInput = prompt("Allow how many more views?", "5");
+    if (!viewsInput) return;
+    setMessage("Raising view limit...");
+    const res = await fetch("/api/share/allow-views", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token, views: Number(viewsInput) }),
+    });
+    const data = await res.json();
+    setMessage(
+      data.ok
+        ? `View limit raised to ${data.maxViews} (${data.viewCount} used so far)`
+        : `Error: ${data.error}`
+    );
+    loadAll();
+  }
+
+  async function allowMoreViewsSelected() {
+    const tokens = [...selectedShares];
+    if (tokens.length === 0) return;
+    const viewsInput = prompt(`Allow how many more views on ${tokens.length} link${tokens.length !== 1 ? "s" : ""}?`, "5");
+    if (!viewsInput) return;
+    setAllowingViewsBulk(true);
+    setMessage(`Raising view limit on ${tokens.length} link${tokens.length !== 1 ? "s" : ""}...`);
+    const res = await fetch("/api/share/allow-views-bulk", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tokens, views: Number(viewsInput) }),
+    });
+    const data = await res.json();
+    setAllowingViewsBulk(false);
+    if (data.ok) {
+      let msg = `Raised the view limit on ${data.succeeded.length} of ${tokens.length}`;
+      if (data.failures.length > 0) {
+        msg += ` — skipped ${data.failures.length}: ${data.failures.map((f) => f.error).join("; ")}`;
+      }
+      setMessage(msg);
+    } else {
+      setMessage(`Error: ${data.error}`);
+    }
     loadAll();
   }
 
@@ -1241,6 +1289,9 @@ export default function Admin() {
           <button onClick={extendSelected} disabled={extendingBulk} className="btn btn-primary">
             {extendingBulk ? "Extending..." : `Extend ${selectedShares.size}`}
           </button>
+          <button onClick={allowMoreViewsSelected} disabled={allowingViewsBulk} className="btn btn-primary">
+            {allowingViewsBulk ? "Raising..." : `+ Views ${selectedShares.size}`}
+          </button>
           <button onClick={revokeSelected} disabled={revokingBulk} className="btn btn-danger">
             {revokingBulk ? "Revoking..." : `Revoke ${selectedShares.size}`}
           </button>
@@ -1417,6 +1468,15 @@ export default function Admin() {
                   {extendable && (
                     <button onClick={() => extend(s.token)} className="btn btn-secondary" style={styles.rowBtn}>
                       Extend
+                    </button>
+                  )}
+                  {/* Only offered where there is actually a cap to raise.
+                      An uncapped share is already unlimited, and imposing a
+                      cap is a tightening of access — a separate, deliberate
+                      action, not something "allow more views" should do. */}
+                  {extendable && s.maxViews && (
+                    <button onClick={() => allowMoreViews(s.token)} className="btn btn-secondary" style={styles.rowBtn}>
+                      + Views
                     </button>
                   )}
                   {active && (

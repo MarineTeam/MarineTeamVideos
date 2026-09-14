@@ -125,7 +125,10 @@ must be literally observed, not assumed.
 - [ ] Create a share with Max views = 1; complete the gate; video plays (view 1).
 - [ ] Reload → "This link has reached its view limit."
 - [ ] Admin table shows the row as "Used up" with `1× / 1`.
-- [ ] Extend that share by some hours → it stays "Used up" (Extend moves expiry, not the count — roadmap (p)). Confirm this is still the intended behavior before treating it as a bug.
+- [ ] Extend that share by some hours → it stays "Used up". Correct: Extend moves expiry, not the count. The two limits are independent.
+- [ ] Click "+ Views" on that row, grant 2 → the row leaves "Used up" and reads `1× / 3`; the same link opens again with no new email and no new token.
+- [ ] Confirm the view count did NOT reset — it still reads 1 used, not 0.
+- [ ] Revoke a capped share, then try "+ Views" → refused, and the share stays revoked.
 - [ ] A share with NO cap set is unaffected: open it several times, status stays Active.
 
 ### Access request on an expired link (added 2026-09-13)
@@ -172,6 +175,7 @@ As of 2026-07-18:
 | One-bundle-per-email consolidation (findOrExtendBundle, getBundleItems — both share.js and share-bulk.js) | CERTIFIED against mocks (L2/L3) | 2026-07-20 (same day, follow-up): two separate single-share calls to the same address consolidated into one email with a stable bundle link; cross-endpoint (bulk then single) consolidation confirmed; orphan sweep folded in a manually-injected pre-existing record; a revoked orphan was correctly excluded; an unrelated recipient was unaffected. NOT yet tried at scale (many bundles/shares) or against real Resend |
 | Expiry extend, incl. bulk + bundle propagation (extendOne, extendBundleForToken — /api/share/extend, /api/share/extend-bulk) | CERTIFIED against mocks (L2/L3) | 2026-07-21: extending a not-yet-expired share added exactly the requested hours to its OLD expiry; extending an already-expired share correctly extended from now, not the stale expiry; a revoked share was correctly rejected with expiresAt unchanged; bulk extend with a mix of valid/nonexistent/revoked tokens reported per-token results without failing the batch; extending one bundle member correctly re-maxed the bundle's own expiresAt. Middleware boundary re-checked (both routes 401 without admin creds). NOT yet tried at scale or in production |
 | Bulk revoke, incl. idempotency (revokeOne — /api/revoke-bulk) | CERTIFIED against mocks (L2/L3) | 2026-07-21: bulk-revoked 2 of 3 shares plus 1 nonexistent token in one call → both flipped, third untouched, bogus one reported a clean failure; re-revoking an already-revoked token succeeded (idempotent, not an error); single-token /api/revoke's behavior confirmed unchanged post-refactor. Middleware boundary re-checked (401 without admin creds). NOT yet tried at scale or in production |
+| Raising a view cap (`/api/share/allow-views`, +bulk) | L0 + L0.5 + L1.5 | 10 cases including the full round trip — a used-up share refused by `decideWatchAccess`, cap raised, SAME token passing the gate again — plus view-count preservation and both refusals. No live pass |
 | The 2026-09-13 batch (`5eb7245`), API-route half: per-IP limiting, access requests, first-play notification, notes, view-cap persistence, shares filtering/paging, CSV export, server-side analytics | L0 + L0.5 + L1.5 | Build clean, all routes registered, 83/83 tests. Routes exercised directly against in-memory KV + Resend doubles, including byte-identity across all six uniform branches on both public endpoints — the first time invariant 4 has been checked by anything other than a grep count. Still no real service and no deploy |
 | The WATCH page access decision: refusals, the single-use grant exchange and replay, `maxViews` at render, geo refusal, cookie shape, legacy-record compatibility | L0 + L0.5 | Extracted to `lib/watchAccess.js` on 2026-09-13 (roadmap item (r)) and covered by 19 cases in `tests/watchAccess.test.mjs`, including the replay being byte-identical to an invalid grant and a record carrying ONLY the original 2026-07 fields still gating/exchanging/playing. Still no live pass |
 | The BUNDLE page access decision: its grant exchange, the N per-video cookies it mints, and live member status | L0 + L0.5 | Extracted to `lib/bundleAccess.js` on 2026-09-13 and covered by 17 cases, including that each minted per-video cookie verifies on its own share and not a sibling, is byte-identical to what the watch gate mints, and that a dead member is skipped rather than breaking the exchange. Still no live pass |
@@ -276,7 +280,7 @@ was false as of that commit, the ladder gained L0.5, section 4 became a
 record of what shipped plus a ranked next rung, and the batch was added to
 the golden inventory at L0+L0.5 ONLY.
 
-- Tests present, CI still absent: `npm test` (expect 119+ passing);
+- Tests present, CI still absent: `npm test` (expect 129+ passing);
   `ls .github 2>&1` (expect: No such file).
 - Generic message string: `grep -n "sign-in link to it" pages/api/watch/request-link.js`.
 - 401 boundary: `grep -n "matcher" middleware.js` (expect `/api/((?!watch/|bundle/).*)`).
