@@ -206,8 +206,13 @@ grep -rn "bunnyshare:" lib pages
 grep -n "gate_\|Path=/watch" lib/watchAccess.js
 # EXPECT: cookieName() returning `gate_${token}`, and buildGateCookie()
 # producing `...; HttpOnly; Path=/watch/${token}; SameSite=Lax; Max-Age=...`
-grep -n "gate_bundle_\|Path=/bundle" "pages/bundle/[bundleId].js"
-# EXPECT: the bundle cookie name and its own Path scope
+grep -n "gate_bundle_\|Path=/bundle" lib/bundleAccess.js
+# EXPECT: bundleCookieName() and buildBundleCookie() (moved out of the page
+# on 2026-09-13 alongside the watch one)
+grep -rn "gate_\${token}" lib pages
+# EXPECT: ONLY lib/watchAccess.js — there must be exactly one definition of
+# the per-video cookie, which is what makes the bundle exchange provably
+# mint the same format the watch gate does
 # Stronger than either grep: tests/watchAccess.test.mjs asserts the exact
 # watch cookie string. If you change that string, that test fails — which is
 # the point. Do not "fix" it without reading non-negotiable 1.

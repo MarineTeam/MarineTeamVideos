@@ -172,17 +172,28 @@ Nine version tags mark points release notes were cut from this history:
   refactor that relocates a compatibility surface must relocate its guard
   in the same change, or the guard silently stops guarding.
 
-  `pages/bundle/[bundleId].js` was deliberately NOT extracted. Its exchange
-  mints one bundle cookie plus a per-video cookie for every member, so it
-  is a different shape rather than a copy, and doing both at once would
-  have doubled the risk of a change to the gate. It stays the open half of
-  item (r).
+- **The bundle page's access decision moved into `lib/bundleAccess.js`**
+  (roadmap item (r), bundle half — a separate commit, since it is a
+  separate change to the gate). Same no-I/O contract, with two injected
+  callbacks rather than one: `isSpent` for single-use and `loadMembers` for
+  the member records, injected rather than loaded up front so the member
+  read still only happens on the paths that need it.
+
+  This collapsed a real duplication. The bundle page had its own
+  `videoCookieName()` and its own per-video cookie template — a second
+  implementation of a compatibility surface. Both now come from
+  `buildGateCookie()` in `lib/watchAccess.js`. The architecture contract has
+  always claimed a bundle exchange mints "the same format the per-video gate
+  already produces"; that claim was previously held up by two
+  implementations happening to agree, and now holds by construction, with a
+  test asserting byte-identity. There is exactly one definition of the
+  `gate_<token>` cookie in the repo.
 
 ### Verified
 - `npm run build` clean; all new routes register (`/api/shares/export`,
   `/api/watch/request-access`, `/api/analytics`), `Proxy (Middleware)` still registers with the
   async middleware.
-- `npm test` — 102/102 passing, stable across repeated runs (the base64url
+- `npm test` — 119/119 passing, stable across repeated runs (the base64url
   flake above was found this way).
 - **Compatibility evidence for the watch-page extraction** (change-control
   class (c)): a record carrying ONLY the original 2026-07 fields — no
@@ -210,11 +221,14 @@ Nine version tags mark points release notes were cut from this history:
   limiter, the first-play notification and the access-request flow are now
   covered by route tests against in-memory doubles, but doubles are not
   services.
-- **The single-use exchange is now tested for the watch page** (the replay
-  is asserted byte-identical to both an invalid and an expired grant, and
-  no refused path ever spends a grant). It has still never been observed on
-  a real deployment, and the BUNDLE page's equivalent exchange remains
-  inside JSX and untested — the open half of roadmap item (r).
+- **The single-use exchange is now tested on both gate entrances** — the
+  replay is asserted byte-identical to both an invalid and an expired grant,
+  and no refused path ever spends a grant, on the watch page and the bundle
+  page alike. It has still never been observed on a real deployment.
+- What remains untested is presentational: React components, including the
+  Analytics panel whose near-miss is recorded in the project skills, and the
+  player's postMessage tracking. Covering those needs a JSX transform and
+  therefore a new dependency, which this repo has consistently avoided.
 - Bunny pagination is verified against a stubbed API that reports
   `totalItems`, not against a real library of more than 100 videos.
 - The constant-time compare has not been measured for timing behaviour on

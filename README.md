@@ -77,12 +77,17 @@ The suite loads the app's real modules through a small test-only resolver
 hook (`tests/register.mjs`), because the source uses extensionless imports
 that Next resolves and plain Node does not.
 
-Two honest limits. Nothing here touches a real service, so the live email
-path and Bunny playback are still unproven. And nothing inside a `.js` file
-containing JSX can be imported by plain Node, so the grant-to-cookie
-exchange on the watch and bundle pages is covered only by its underlying
-primitives plus a manual checklist. See `.claude/skills/` for the end-to-end
-procedures that cover both gaps.
+**Access-decision tests** cover both entrances to the gate — the watch page
+and the bundle listing page — including every refusal reason, the exact
+cookie each mints, that a replayed sign-in link is refused and looks
+identical to an expired one, and that a record carrying only the original
+field set still works.
+
+One honest limit: nothing here touches a real service, so the live email
+path and Bunny playback are still unproven. What is untested in the code is
+presentational — React components and the player's event tracking — because
+importing JSX would need a build dependency this project does without. See
+`.claude/skills/` for the end-to-end procedures that cover the live gap.
 
 ## Environment variables
 

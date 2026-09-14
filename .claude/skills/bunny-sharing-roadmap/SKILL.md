@@ -692,7 +692,7 @@ repo / "you have a result when…". All are CANDIDATES — none is scheduled wor
   `/api/analytics` (which legitimately needs every record) is the only
   remaining full reader.
 
-### (r) Extract the watch/bundle access decision out of the JSX pages — WATCH HALF ADOPTED 2026-09-13; BUNDLE HALF STILL OPEN
+### (r) Extract the watch/bundle access decision out of the JSX pages — ADOPTED 2026-09-13 (both halves)
 - **Why:** the single most security-critical decision path in the app — is
   this visitor allowed to watch, and does this grant spend — lives inside
   `getServerSideProps` in `pages/watch/[token].js` (and its twin in
@@ -748,12 +748,33 @@ repo / "you have a result when…". All are CANDIDATES — none is scheduled wor
   exact-string test. A refactor that relocates a compatibility surface must
   relocate its guard in the same change, or the guard silently stops
   guarding.
-- **Bundle half, still open:** `pages/bundle/[bundleId].js` was deliberately
-  left alone. Its exchange mints one `gate_bundle_<id>` cookie plus a
-  `gate_<token>` cookie for EVERY member, so it is a genuinely different
-  shape rather than a copy, and doing both in one commit would have doubled
-  the risk of a change to the gate. Same first steps as above. Until then
-  the bundle exchange remains untested.
+- **What shipped (bundle half, same day, separate commit):**
+  `lib/bundleAccess.js` exporting `decideBundleAccess()`,
+  `bundleCookieName()`, `bundleToken()` and `buildBundleCookie()`. Same
+  no-I/O contract as watchAccess, with TWO injected callbacks rather than
+  one: `isSpent` for single-use and `loadMembers` for the member records —
+  injected rather than loaded up front so the member read still only
+  happens on the paths that need it, preserving the page's original I/O
+  profile.
+- **A duplication collapsed in the process.** The bundle page had its own
+  `videoCookieName()`, a second definition of the per-video cookie name, and
+  built those cookies with its own string template. Both now come from
+  watchAccess's `cookieName()` and `buildGateCookie()`. This matters beyond
+  tidiness: architecture-contract 2.6 claims a bundle exchange mints "the
+  same format the per-video gate already produces", and that claim was
+  previously held up by two implementations happening to agree. It now
+  holds by construction, and a test asserts the minted cookie is
+  byte-identical to what `buildGateCookie` produces.
+- **Verified (bundle half):** `npm run build` clean; suite 102 → 119.
+  `tests/bundleAccess.test.mjs` covers refusals, the exchange minting one
+  listing cookie plus one per live member, a dead member being skipped
+  rather than breaking the exchange, each minted per-video cookie verifying
+  on its own share and NOT on a sibling, the replay being byte-identical to
+  a stale link, no refused path spending a grant, a video grant being unable
+  to open a bundle and vice versa, member status re-read live (an expired or
+  revoked member shows correctly with the bundle record untouched), a
+  deleted member simply disappearing, and that a stray `revoked` field on a
+  bundle record is ignored rather than silently honoured.
 
 ### (n) Audit log of grant exchanges — OPEN
 - Owned by the campaign's hardening menu item 4. Now the highest-ranked
@@ -854,8 +875,10 @@ Written 2026-07-18 against branch claude/bulk-share-separate-links-auth-cblrle.
 - (g) still adopted: `npm test` (expect 83+ passing); `ls tests/*.test.mjs tests/routes.*.test.mjs`
 - (r) watch half still adopted: `grep -c "decideWatchAccess" "pages/watch/[token].js" lib/watchAccess.js`
   (expect 1 and 1); the page must contain no access `if` of its own
-- (r) bundle half still open: `grep -c "verifyGrant" "pages/bundle/[bundleId].js"`
-  — while the decision lives in that JSX page, it is untestable
+- (r) bundle half still adopted: `grep -c "decideBundleAccess" "pages/bundle/[bundleId].js" lib/bundleAccess.js`
+  (expect 1 and 1)
+- (r) no second per-video cookie implementation: `grep -rn "gate_\${token}" lib pages`
+  — expect ONLY lib/watchAccess.js
 - (m) still open: `grep -n "loadAllShares" lib/shareQuery.js pages/api` —
   while `/api/shares` still calls it, paging has not cut the read count
 - (f) still adopted: `grep -n "setEmailFailed" pages/api/share.js` (failure is flagged, not 500'd)

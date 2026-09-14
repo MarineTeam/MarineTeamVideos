@@ -214,9 +214,14 @@ suggestions; they are the reasons the system is safe and simple.
   from test coverage. If you add an access rule, add it to
   `decideWatchAccess` and a case to `tests/watchAccess.test.mjs`. The page
   should stay free of `if` statements about access.
-- **Still open**: `pages/bundle/[bundleId].js` has NOT been extracted —
-  its exchange mints N per-video cookies and is a different shape. It
-  remains the untested half of roadmap item (r).
+- **The bundle page followed the same day**: `decideBundleAccess()` in
+  `lib/bundleAccess.js`, same no-I/O contract, with `loadMembers` injected
+  alongside `isSpent`. Its per-video cookies are built by watchAccess's own
+  `buildGateCookie`, so section 2.6's claim that a bundle exchange mints
+  "the same format the per-video gate already produces" now holds by
+  construction rather than by two implementations agreeing. There is
+  exactly one definition of the `gate_<token>` cookie in the repo; verify
+  with `grep -rn "gate_\${token}" lib pages`.
 
 ### 2.5 Share record in KV is the truth; the Bunny embed URL is a second, short-lived signing layer
 
@@ -651,7 +656,8 @@ gate_<token>=<urlencoded grant>; HttpOnly; Path=/watch/<token>; SameSite=Lax; Ma
 starts with `https` — the page computes that and passes it in as `secure`.
 
 The bundle listing cookie follows the identical shape, scoped to the bundle
-path instead (`pages/bundle/[bundleId].js`):
+path instead (built by `buildBundleCookie()` in `lib/bundleAccess.js`, applied
+by `pages/bundle/[bundleId].js`):
 
 ```
 gate_bundle_<bundleId>=<urlencoded grant>; HttpOnly; Path=/bundle/<bundleId>; SameSite=Lax; Max-Age=<seconds until bundle.expiresAt>[; Secure]
