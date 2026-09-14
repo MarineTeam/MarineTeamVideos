@@ -173,7 +173,8 @@ As of 2026-07-18:
 | Expiry extend, incl. bulk + bundle propagation (extendOne, extendBundleForToken — /api/share/extend, /api/share/extend-bulk) | CERTIFIED against mocks (L2/L3) | 2026-07-21: extending a not-yet-expired share added exactly the requested hours to its OLD expiry; extending an already-expired share correctly extended from now, not the stale expiry; a revoked share was correctly rejected with expiresAt unchanged; bulk extend with a mix of valid/nonexistent/revoked tokens reported per-token results without failing the batch; extending one bundle member correctly re-maxed the bundle's own expiresAt. Middleware boundary re-checked (both routes 401 without admin creds). NOT yet tried at scale or in production |
 | Bulk revoke, incl. idempotency (revokeOne — /api/revoke-bulk) | CERTIFIED against mocks (L2/L3) | 2026-07-21: bulk-revoked 2 of 3 shares plus 1 nonexistent token in one call → both flipped, third untouched, bogus one reported a clean failure; re-revoking an already-revoked token succeeded (idempotent, not an error); single-token /api/revoke's behavior confirmed unchanged post-refactor. Middleware boundary re-checked (401 without admin creds). NOT yet tried at scale or in production |
 | The 2026-09-13 batch (`5eb7245`), API-route half: per-IP limiting, access requests, first-play notification, notes, view-cap persistence, shares filtering/paging, CSV export, server-side analytics | L0 + L0.5 + L1.5 | Build clean, all routes registered, 83/83 tests. Routes exercised directly against in-memory KV + Resend doubles, including byte-identity across all six uniform branches on both public endpoints — the first time invariant 4 has been checked by anything other than a grep count. Still no real service and no deploy |
-| The 2026-09-13 batch, JSX-page half: the single-use grant exchange, `maxViews` enforcement at render, geo enforcement | L0 ONLY | Cannot be automated until roadmap item (r) extracts the logic from the React files. The single-use PRIMITIVES are covered (`tests/kvBacked.test.mjs`) but the exchange that calls them is not. Use the §2 checklists manually |
+| The WATCH page access decision: refusals, the single-use grant exchange and replay, `maxViews` at render, geo refusal, cookie shape, legacy-record compatibility | L0 + L0.5 | Extracted to `lib/watchAccess.js` on 2026-09-13 (roadmap item (r)) and covered by 19 cases in `tests/watchAccess.test.mjs`, including the replay being byte-identical to an invalid grant and a record carrying ONLY the original 2026-07 fields still gating/exchanging/playing. Still no live pass |
+| The BUNDLE page access decision: its grant exchange and the N per-video cookies it mints | L0 ONLY | Still inside a JSX file, still unautomatable — the open half of roadmap item (r). Use the §2 bundle checklist manually |
 | Constant-time admin compare (`5eb7245`) | L0 + L0.5 | `tests/safeCompare.test.mjs` covers correctness. The TIMING property is argued from construction and has never been measured on Edge — do not claim it as verified |
 | Everything else live (real email delivery, gate E2E, bulk E2E, Bunny playback) | UNCERTIFIED | Never exercised against real services — bunny-sharing-email-gate-campaign is the path to certification |
 
@@ -214,8 +215,9 @@ Node cannot parse JSX and this repo has no transform available (only
 `@swc/helpers`, a runtime shim, is installed). So these are untested:
 
 - the grant→cookie exchange and single-use spend in
-  `pages/watch/[token].js` and `pages/bundle/[bundleId].js`;
-- the `maxViews` and geo enforcement in those same `getServerSideProps`;
+  `pages/bundle/[bundleId].js` (the WATCH page's equivalent was extracted
+  to `lib/watchAccess.js` on 2026-09-13 and IS now tested);
+- the geo and per-member enforcement in that same `getServerSideProps`;
 - every React component, including the Analytics panel whose near-miss is
   recorded in failure-archaeology Episode 12.
 
@@ -225,10 +227,10 @@ into `lib/` is roadmap item (r), and it is the single highest-value change
 for testability in this repo.
 
 Next rung, in priority order:
-1. **Roadmap item (r)** — extract the watch/bundle access decision out of
-   the JSX pages, then test the exchange directly. Until then the single-use
-   guarantee is evidenced only by its primitives (`tests/kvBacked.test.mjs`)
-   and the manual checklist in §2.
+1. **Roadmap item (r), bundle half** — the watch half shipped 2026-09-13 and
+   the single-use replay is now directly tested. The bundle page's exchange,
+   which mints N per-video cookies, is still inside JSX and still evidenced
+   only by the manual checklist in §2.
 2. **CI**, so any of this runs without being remembered. Note the history
    before proposing a scanner specifically (failure-archaeology Episode 5).
 3. **A real-service pass** — the L2/L3/L4 rungs. Unchanged in priority by
@@ -274,7 +276,7 @@ was false as of that commit, the ladder gained L0.5, section 4 became a
 record of what shipped plus a ranked next rung, and the batch was added to
 the golden inventory at L0+L0.5 ONLY.
 
-- Tests present, CI still absent: `npm test` (expect 83+ passing);
+- Tests present, CI still absent: `npm test` (expect 102+ passing);
   `ls .github 2>&1` (expect: No such file).
 - Generic message string: `grep -n "sign-in link to it" pages/api/watch/request-link.js`.
 - 401 boundary: `grep -n "matcher" middleware.js` (expect `/api/((?!watch/|bundle/).*)`).

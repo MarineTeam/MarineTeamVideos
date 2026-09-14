@@ -148,12 +148,50 @@ Nine version tags mark points release notes were cut from this history:
   passed alone and failed in the full suite. Now tampers at the byte level
   and asserts the bytes actually changed, plus a new wrong-length case.
 
+### Changed
+- **The watch page's access decision moved out of JSX into
+  `lib/watchAccess.js`** (roadmap item (r), watch half). Pure refactor: no
+  behaviour change, no format change, no new field. `decideWatchAccess()`
+  performs no I/O — the record, settings, cookies, geo verdict and `secure`
+  flag are passed in, the spent-grant lookup arrives as an injected
+  `isSpent` callback, and it returns a data description of what to do
+  (`invalid` / `exchange` / `need-email` / `authorized`). The page gathers
+  facts and applies effects, and now contains no access branching of its
+  own. `cookieName()` and `buildGateCookie()` moved with it.
+
+  The motivation was coverage, not tidiness: the page is a JSX file, plain
+  Node cannot parse JSX, and this repo has no transform — so the single
+  most security-critical path in the app was the only significant one with
+  no automated test. It now has 19 cases, including the replay case that
+  was previously the weakest link in the whole release.
+
+  One consequence worth flagging: the cookie string is no longer built in
+  the page, so the invariant grep that pointed there stopped matching. It
+  was repointed at `lib/watchAccess.js` in the same change, and the cookie
+  string is now additionally pinned by an exact-string assertion. A
+  refactor that relocates a compatibility surface must relocate its guard
+  in the same change, or the guard silently stops guarding.
+
+  `pages/bundle/[bundleId].js` was deliberately NOT extracted. Its exchange
+  mints one bundle cookie plus a per-video cookie for every member, so it
+  is a different shape rather than a copy, and doing both at once would
+  have doubled the risk of a change to the gate. It stays the open half of
+  item (r).
+
 ### Verified
 - `npm run build` clean; all new routes register (`/api/shares/export`,
   `/api/watch/request-access`, `/api/analytics`), `Proxy (Middleware)` still registers with the
   async middleware.
-- `npm test` — 83/83 passing, stable across eight consecutive runs (the
-  base64url flake above was found this way).
+- `npm test` — 102/102 passing, stable across repeated runs (the base64url
+  flake above was found this way).
+- **Compatibility evidence for the watch-page extraction** (change-control
+  class (c)): a record carrying ONLY the original 2026-07 fields — no
+  `viewCount`, `watermark`, `maxViews`, `note`, `lastPositionSec` or
+  `durationSec` — still reaches the email gate, still accepts a magic link,
+  and still plays with a cookie, starting its view tracking cleanly. The
+  cookie name, `Path` scope, `HttpOnly`, `SameSite` and the full string are
+  asserted verbatim. The grant format and `lib/gate.js` are untouched, so
+  magic links and cookies signed before this change verify after it.
 - Invariant greps re-run: matcher unchanged
   (`["/", "/api/((?!watch/|bundle/).*)"]`), `bunnyshare:` prefix unchanged
   with no bare `share:` keys, `gate_<token>` cookie name and
@@ -172,12 +210,11 @@ Nine version tags mark points release notes were cut from this history:
   limiter, the first-play notification and the access-request flow are now
   covered by route tests against in-memory doubles, but doubles are not
   services.
-- **The single-use grant exchange remains the weakest link.** It lives in
-  `getServerSideProps` inside JSX files that plain Node cannot import, so
-  only its primitives are automated. Opening the same magic link twice has
-  never been observed on a deployment. Extracting that logic so it can be
-  tested is now tracked as roadmap item (r), and it is the highest-value
-  testability change left in the repo.
+- **The single-use exchange is now tested for the watch page** (the replay
+  is asserted byte-identical to both an invalid and an expired grant, and
+  no refused path ever spends a grant). It has still never been observed on
+  a real deployment, and the BUNDLE page's equivalent exchange remains
+  inside JSX and untested — the open half of roadmap item (r).
 - Bunny pagination is verified against a stubbed API that reports
   `totalItems`, not against a real library of more than 100 videos.
 - The constant-time compare has not been measured for timing behaviour on

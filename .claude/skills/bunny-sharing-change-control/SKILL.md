@@ -200,9 +200,17 @@ grep -rn "bunnyshare:" lib pages
 # `grep -rn "share:" lib pages | grep -v bunnyshare:` must print NOTHING
 # (no legacy bare `share:` keys may reappear)
 
-# Cookie name/path unchanged:
-grep -n "gate_" "pages/watch/[token].js"
-# EXPECT: return `gate_${token}`;  (and Set-Cookie uses Path=/watch/${token})
+# Cookie name/path unchanged. NOTE: this moved out of the page on
+# 2026-09-13 (roadmap item (r)) — the watch cookie is now built in
+# lib/watchAccess.js. The bundle cookie is still built in its page.
+grep -n "gate_\|Path=/watch" lib/watchAccess.js
+# EXPECT: cookieName() returning `gate_${token}`, and buildGateCookie()
+# producing `...; HttpOnly; Path=/watch/${token}; SameSite=Lax; Max-Age=...`
+grep -n "gate_bundle_\|Path=/bundle" "pages/bundle/[bundleId].js"
+# EXPECT: the bundle cookie name and its own Path scope
+# Stronger than either grep: tests/watchAccess.test.mjs asserts the exact
+# watch cookie string. If you change that string, that test fails — which is
+# the point. Do not "fix" it without reading non-negotiable 1.
 
 # SITE_URL fail-loud, no Host-header fallback (2026-07-22 fix):
 grep -n "SITE_URL is not set\|req.headers.host" lib/shares.js

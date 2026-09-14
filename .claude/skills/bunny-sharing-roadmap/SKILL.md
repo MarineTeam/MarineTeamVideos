@@ -692,7 +692,7 @@ repo / "you have a result when…". All are CANDIDATES — none is scheduled wor
   `/api/analytics` (which legitimately needs every record) is the only
   remaining full reader.
 
-### (r) Extract the watch/bundle access decision out of the JSX pages — OPEN (opened 2026-09-13)
+### (r) Extract the watch/bundle access decision out of the JSX pages — WATCH HALF ADOPTED 2026-09-13; BUNDLE HALF STILL OPEN
 - **Why:** the single most security-critical decision path in the app — is
   this visitor allowed to watch, and does this grant spend — lives inside
   `getServerSideProps` in `pages/watch/[token].js` (and its twin in
@@ -722,6 +722,38 @@ repo / "you have a result when…". All are CANDIDATES — none is scheduled wor
   access decision is covered by automated tests including the single-use
   replay case, and the manual §2 single-use checklist becomes a
   belt-and-braces rather than the only evidence.
+- **What shipped (watch half):** `lib/watchAccess.js` exporting
+  `decideWatchAccess()`, `cookieName()`, `buildGateCookie()` and
+  `EXPIRED_NOTICE`. It performs NO I/O — record, settings, cookies, geo
+  verdict and `secure` are passed in, the spent-grant lookup arrives as an
+  injected `isSpent` callback, and it returns a data description
+  (`invalid` / `exchange` / `need-email` / `authorized`). The page gathers
+  facts and applies effects and now contains no access branching of its own.
+  Behaviour is unchanged by construction: the same branches in the same
+  order, the same strings, the same cookie.
+- **Verified:** prediction stated before coding (page behaviour byte-
+  identical, build and suite green, replay directly testable) and met.
+  `npm run build` clean; suite 83 → 102 cases, all passing.
+  `tests/watchAccess.test.mjs` covers all nine refusal/allow branches, the
+  exact cookie string, Secure on/off, the replay being byte-identical to an
+  invalid AND an expired grant, that no refused path ever asks for a spend
+  (the prefetcher property), token-bound tracking grants capped at 6h,
+  watermark resolution reaching the player, and a LEGACY record carrying
+  only the original 2026-07 fields still gating, exchanging and playing —
+  the class (c) backward-compatibility evidence.
+- **One thing this moved, watch for it:** the cookie string is no longer
+  built in the page, so the change-control invariant grep that pointed at
+  `pages/watch/[token].js` stopped matching. It was updated to point at
+  `lib/watchAccess.js`, and the surface is now additionally pinned by an
+  exact-string test. A refactor that relocates a compatibility surface must
+  relocate its guard in the same change, or the guard silently stops
+  guarding.
+- **Bundle half, still open:** `pages/bundle/[bundleId].js` was deliberately
+  left alone. Its exchange mints one `gate_bundle_<id>` cookie plus a
+  `gate_<token>` cookie for EVERY member, so it is a genuinely different
+  shape rather than a copy, and doing both in one commit would have doubled
+  the risk of a change to the gate. Same first steps as above. Until then
+  the bundle exchange remains untested.
 
 ### (n) Audit log of grant exchanges — OPEN
 - Owned by the campaign's hardening menu item 4. Now the highest-ranked
@@ -820,8 +852,10 @@ Written 2026-07-18 against branch claude/bulk-share-separate-links-auth-cblrle.
 - (e) still adopted: `grep -n "page=\${page}" lib/bunny.js` (two hits: videos
   and collections) — `itemsPerPage=100` alone with no `page` is the bug
 - (g) still adopted: `npm test` (expect 83+ passing); `ls tests/*.test.mjs tests/routes.*.test.mjs`
-- (r) still open: `grep -c "getServerSideProps" "pages/watch/[token].js"` —
-  while the access decision still lives in the JSX page, it is untestable
+- (r) watch half still adopted: `grep -c "decideWatchAccess" "pages/watch/[token].js" lib/watchAccess.js`
+  (expect 1 and 1); the page must contain no access `if` of its own
+- (r) bundle half still open: `grep -c "verifyGrant" "pages/bundle/[bundleId].js"`
+  — while the decision lives in that JSX page, it is untestable
 - (m) still open: `grep -n "loadAllShares" lib/shareQuery.js pages/api` —
   while `/api/shares` still calls it, paging has not cut the read count
 - (f) still adopted: `grep -n "setEmailFailed" pages/api/share.js` (failure is flagged, not 500'd)

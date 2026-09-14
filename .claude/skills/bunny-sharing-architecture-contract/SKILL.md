@@ -177,8 +177,12 @@ suggestions; they are the reasons the system is safe and simple.
 
 - **Decision**: Cookie name is `gate_<token>` and it is set with
   `HttpOnly; Path=/watch/<token>; SameSite=Lax; Max-Age=<until share
-  expiry>` plus `; Secure` when the request is https
-  (`pages/watch/[token].js:104-106,145-153`).
+  expiry>` plus `; Secure` when the request is https. Since 2026-09-13 the
+  name and the exact cookie string are produced by `cookieName()` and
+  `buildGateCookie()` in `lib/watchAccess.js` (roadmap item (r)); the page
+  only applies the header. The string is asserted verbatim by
+  `tests/watchAccess.test.mjs`, so this surface is now protected by a test
+  rather than only by a grep.
 - **Why**: Path scoping means authorization for one share never rides along
   to another share's page — the browser simply does not send it. The
   deliberate cost: a recipient with five shares verifies five times. That
@@ -189,6 +193,30 @@ suggestions; they are the reasons the system is safe and simple.
   ship cross-share credentials in every request for no reason, and a future
   verification bug becomes cross-share instead of contained. Renaming the
   cookie breaks live viewers' sessions (invariant 1).
+
+### 2.4a The access decision lives in `lib/`, not in the page (2026-09-13)
+
+- **Decision**: every branch of "may this visitor watch" — not found,
+  revoked, expired, view cap, geo, grant exchange, replay, valid cookie,
+  no cookie — is `decideWatchAccess()` in `lib/watchAccess.js`. It performs
+  NO I/O: the record, settings, cookies, geo verdict and `secure` flag are
+  passed in, the "has this grant been spent" lookup arrives as an injected
+  `isSpent` callback, and the result is a data description of what to do
+  (`invalid` / `exchange` / `need-email` / `authorized`).
+  `pages/watch/[token].js` gathers the facts and applies the effects.
+- **Why**: the page is a JSX file. Plain Node cannot parse JSX and this repo
+  has no transform, so while the decision lived there it was unreachable
+  from the test suite — the single most security-critical path in the app
+  was the only significant one with no automated coverage. It is now
+  covered by 19 cases including the single-use replay, the view cap, geo
+  refusal, cookie shape, and a legacy-record-shape compatibility case.
+- **What breaks**: putting a branch back in the page silently removes it
+  from test coverage. If you add an access rule, add it to
+  `decideWatchAccess` and a case to `tests/watchAccess.test.mjs`. The page
+  should stay free of `if` statements about access.
+- **Still open**: `pages/bundle/[bundleId].js` has NOT been extracted —
+  its exchange mints N per-video cookies and is a different shape. It
+  remains the untested half of roadmap item (r).
 
 ### 2.5 Share record in KV is the truth; the Bunny embed URL is a second, short-lived signing layer
 
@@ -417,7 +445,7 @@ from the repo root to confirm it still holds.
 
 | # | Invariant | Verify it still holds |
 |---|-----------|-----------------------|
-| 1 | **Never break live links** (prime directive): existing tokens, `bunnyshare:*` key prefix, record field meanings, `/watch/<token>` URL shape, and `gate_<token>` cookie name/path keep working across all changes. (Cautionary tale: `30ecd7f` silently migrated `share:` → `bunnyshare:` and orphaned old records.) | `grep -rn "bunnyshare:" lib pages` — every KV access uses the prefix; `grep -rn "gate_" pages` — cookie name unchanged |
+| 1 | **Never break live links** (prime directive): existing tokens, `bunnyshare:*` key prefix, record field meanings, `/watch/<token>` URL shape, and `gate_<token>` cookie name/path keep working across all changes. (Cautionary tale: `30ecd7f` silently migrated `share:` → `bunnyshare:` and orphaned old records.) | `grep -rn "bunnyshare:" lib pages` — every KV access uses the prefix; `grep -rn "gate_" lib pages` — cookie name unchanged (the watch cookie moved to `lib/watchAccess.js` on 2026-09-13, so a `pages`-only grep now misses it). Best check: `npm test` — `tests/watchAccess.test.mjs` asserts the exact cookie string |
 | 2 | All user-controlled strings in email HTML pass `escapeHtml`; all links pass `isValidUrl` (`lib/mailer.js:4-22`) | `grep -n "escapeHtml\|isValidUrl" lib/mailer.js` — present in every `send*` function |
 | 3 | `baseUrl(req)` REQUIRES `SITE_URL` and fails loudly if unset (`lib/shares.js`) — never falls back to the request's Host header, which a client can spoof. (2026-07-22 fix for a CodeQL host-header-poisoning finding; see failure-archaeology for the incident.) | `grep -n "SITE_URL is not set" lib/shares.js` — throw present; `grep -n "req.headers.host" lib/shares.js` — expect NO match |
 | 4 | `/api/watch/request-link`, `/api/bundle/request-link` AND `/api/watch/request-access` return an IDENTICAL 200 body for every outcome — invalid link/bundle, mismatched email, throttled, rate-limited, success, AND any unexpected runtime error (anti-enumeration) | `grep -n "genericOk" pages/api/watch/request-link.js pages/api/bundle/request-link.js pages/api/watch/request-access.js` — expect 1 definition + 6 `return genericOk()` sites in each (5 outcome branches + the catch block, plus the per-IP branch added 2026-09-13). Any NEW branch in any of these handlers must return `genericOk()` |
@@ -426,7 +454,7 @@ from the repo root to confirm it still holds.
 | 7 | Middleware matcher keeps `/api/watch/*` and `/api/bundle/*` public and everything else on the admin surface behind Basic Auth (plus an opt-in admin geo whitelist); `/watch/*` and `/bundle/*` stay out of the matcher | `grep -n "matcher" middleware.js` — exactly `["/", "/api/((?!watch/\|bundle/).*)"]` |
 | 8 | Every share has its own token; bulk M recipients × N videos → M×N records, each independently revocable | `grep -n "createShareRecord" pages/api/share-bulk.js` — inside the per-recipient, per-video loops |
 | 9 | Revoke flips `revoked: true`, never deletes; `pages/api/revoke-permanent.js` is the one EXPLICIT exception (requires the record already be revoked) plus `cleanup.js` (revoked-or-expired sweep) | `grep -n "kvDel" pages/api/*.js` — only `cleanup.js` and `revoke-permanent.js` match |
-| 10 | A magic-link grant is spendable once: the cookie-setting exchange marks it via `lib/singleUse.js`, and a spent grant falls through to the SAME form as an expired one (added 2026-09-13). Never spend a grant on a path that does not set the cookie | `grep -n "isGrantSpent\|markGrantSpent" "pages/watch/[token].js" "pages/bundle/[bundleId].js"` — expect both, inside the `query.grant` branch only |
+| 10 | A magic-link grant is spendable once: the cookie-setting exchange marks it via `lib/singleUse.js`, and a spent grant falls through to the SAME form as an expired one (added 2026-09-13). Never spend a grant on a path that does not set the cookie | `npm test` — `tests/watchAccess.test.mjs` asserts the replay is byte-identical to an invalid grant AND that no refused path ever asks for a spend. Also `grep -n "isGrantSpent\|markGrantSpent" "pages/watch/[token].js" "pages/bundle/[bundleId].js"` |
 | 11 | Admin credentials are compared in constant time, both halves always evaluated (added 2026-09-13) | `grep -n "timingSafeEqualStr" middleware.js` — expect it in a `Promise.all`, NOT behind `&&`; a bare `u === user` means it regressed |
 
 ## 4. Known weak points — honest register
@@ -613,14 +641,14 @@ Verification (`verifyGrant`, `lib/gate.js:47-66`): recompute HMAC,
 `timingSafeEqual`, reject expired (`x`), reject wrong token (`t`), never
 throw on malformed input — malformed returns `null`.
 
-### 5.3 Cookie — set at `pages/watch/[token].js:150-153`
+### 5.3 Cookie — built by `buildGateCookie()` in `lib/watchAccess.js`, applied by `pages/watch/[token].js`
 
 ```
 gate_<token>=<urlencoded grant>; HttpOnly; Path=/watch/<token>; SameSite=Lax; Max-Age=<seconds until record.expiresAt>[; Secure]
 ```
 
 `Secure` is appended when `x-forwarded-proto` is https, or `SITE_URL`
-starts with `https` (`pages/watch/[token].js:146-149`).
+starts with `https` — the page computes that and passes it in as `secure`.
 
 The bundle listing cookie follows the identical shape, scoped to the bundle
 path instead (`pages/bundle/[bundleId].js`):
