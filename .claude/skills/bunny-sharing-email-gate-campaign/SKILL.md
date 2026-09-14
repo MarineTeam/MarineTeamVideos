@@ -188,22 +188,28 @@ observation log lives. The campaign is then complete.
    a stale one rather than a distinct "already used" message, so a replay is
    indistinguishable from an expired link. Best-effort — KV errors fail open
    to the old replayable behaviour rather than locking out a valid holder.
-   **Validation predicate still unmet:** opening the same magic link twice
-   against a REAL deployment has not been observed; only unit tests
-   (`tests/kvBacked.test.mjs`) and the checklist in validation-and-qa §2
-   exist. Run that checklist during P3, and re-run the P2 uniformity suite —
-   the spent-grant branch is new and must not have become distinguishable.
+   **Validation predicate still unmet, and this one is the weakest link in
+   the batch:** the exchange that spends the grant lives in a JSX page that
+   the test suite cannot import (roadmap item (r)), so only the PRIMITIVES
+   are automated (`tests/kvBacked.test.mjs`). Opening the same magic link
+   twice has never been observed on any deployment. Run the
+   validation-and-qa §2 single-use checklist during P3 — it is currently
+   the ONLY evidence this feature works end to end — and re-run the P2
+   uniformity suite, since the spent-grant branch is new and must not have
+   become distinguishable.
 2. **Per-IP rate limiting. — BUILT 2026-09-13 (`5eb7245`), NOT YET CERTIFIED
    LIVE.** `lib/rateLimit.js`, `gateip:<ip>` counter with a 60s window, 10
    requests/min, reading the first `x-forwarded-for` entry as this entry
    advised. Applied to BOTH request-link endpoints and also to the new
    `/api/watch/request-access`. Placed before any `kvGet` so a spray costs
-   one read. Over-limit returns the same `genericOk()` — verify this
-   specifically in P2, since a rate-limit branch is the easiest place to
-   accidentally introduce a distinguishable response or an obvious timing
-   shortcut. **Validation predicate still unmet:** no live test of >N
-   requests/min from one IP, and the non-atomic counter's behaviour under
-   real concurrency is unmeasured.
+   one read. Over-limit returns the same `genericOk()`. This is now
+   asserted automatically: `tests/routes.gate.test.mjs` byte-compares all
+   six outcome branches (success, wrong email, unknown token, revoked,
+   expired, throttled) plus the rate-limited one, and separately proves the
+   cap stops sends at 10/min with per-IP bucket isolation. **Validation
+   predicate still partly unmet:** that is against an in-memory double, so
+   a live test of >N requests/min from a real edge, and the non-atomic
+   counter's behaviour under real concurrency, remain unmeasured.
 3. **Cookie/grant lifetime tuning.** NOW THE TOP UNBUILT ITEM alongside 4.
    Note the new interaction: magic links became single-use in item 1, so
    shortening cookie life means more round-trips through a one-shot

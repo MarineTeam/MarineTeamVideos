@@ -309,13 +309,23 @@ repo / "you have a result when…". All are CANDIDATES — none is scheduled wor
   could land byte-identical to the signed one (same `Date.now()`
   millisecond) and so passed on its own signature. It now forges a
   different recipient. Watch for that shape in any new crypto test.
-- **Still open — what the suite does NOT cover:** no API route is tested;
-  no React component is tested (the Analytics near-miss in
-  failure-archaeology Episode 12 would not have been caught by this suite);
-  no linter; no CI, so nothing runs these automatically on push. The next
-  rung is route-level tests against a mock KV/SMTP harness — the shape
-  items (f) through (j) used manually in July. See
-  bunny-sharing-validation-and-qa §4.
+- **Route-level tests followed same day.** `tests/helpers/harness.mjs`
+  routes a single `globalThis.fetch` stub to in-memory doubles for BOTH the
+  Upstash REST API and the Resend HTTP API — both are plain fetch clients,
+  so no module mocking and still no new dependency — plus Next-style
+  `req`/`res` doubles. Four route files (`tests/routes.*.test.mjs`) now
+  cover `/api/watch/request-link`, `/api/watch/request-access`,
+  `/api/watch/track`, `/api/share`, `/api/shares`, `/api/shares/export` and
+  `/api/analytics`. 83 cases total. Notably this is the first time
+  invariant 4 (uniform responses) has been checked by actually
+  byte-comparing the branches rather than counting `genericOk()` greps.
+- **Still open — what the suite does NOT cover:** anything inside a JSX
+  file, which plain Node cannot parse and this repo has no transform for.
+  That means the grant→cookie exchange, `maxViews` enforcement at render,
+  geo enforcement, and every React component (the Analytics near-miss in
+  failure-archaeology Episode 12 still would not be caught). See item (r),
+  which is the fix. Also still no linter and no CI, so nothing runs any of
+  this automatically on push.
 
 ### (h) Bulk "bundle" landing page — ADOPTED 2026-07-20
 - **Was:** a bulk recipient got N links in one email with no single page
@@ -682,6 +692,37 @@ repo / "you have a result when…". All are CANDIDATES — none is scheduled wor
   `/api/analytics` (which legitimately needs every record) is the only
   remaining full reader.
 
+### (r) Extract the watch/bundle access decision out of the JSX pages — OPEN (opened 2026-09-13)
+- **Why:** the single most security-critical decision path in the app — is
+  this visitor allowed to watch, and does this grant spend — lives inside
+  `getServerSideProps` in `pages/watch/[token].js` (and its twin in
+  `pages/bundle/[bundleId].js`), which are React files containing JSX.
+  Plain Node cannot import them and the repo has no JSX transform (only
+  `@swc/helpers`, a runtime shim, is installed), so that logic is
+  permanently unreachable from the test suite while it lives there. Every
+  other comparable path in this codebase is already in `lib/` and is
+  tested. This is the highest-value testability change available.
+- **Asset:** the logic is already a mostly-pure function of
+  `(record, settings, query, cookies, now)` returning a decision; the JSX
+  around it only renders the result.
+- **First steps:** (1) move the body of `watchProps` into
+  `lib/watchAccess.js` as a function taking the record/settings/request
+  facts and returning `{decision, props?, cookie?, redirect?}` — the page
+  keeps fetching and applying, so `res.setHeader` and `kvSet` stay in the
+  page; (2) prediction, written BEFORE coding: for every one of the
+  existing manual §2 checklist cases the returned decision matches what the
+  page does today, and `npm run build` plus the full suite stay green;
+  (3) add route-style tests for the exchange, replay, `maxViews`, geo, and
+  cookie shape, then delete the "JSX-page half" row from
+  validation-and-qa's golden inventory.
+- **Compatibility:** this is a pure refactor — it must not change the
+  cookie name, path, grant format, or any response. Class (c)/(d) under
+  change-control: it touches the gate. Do it on its own, never bundled.
+- **Result when:** `pages/watch/[token].js` contains rendering only, the
+  access decision is covered by automated tests including the single-use
+  replay case, and the manual §2 single-use checklist becomes a
+  belt-and-braces rather than the only evidence.
+
 ### (n) Audit log of grant exchanges — OPEN
 - Owned by the campaign's hardening menu item 4. Now the highest-ranked
   UNBUILT hardening item, since items 1 and 2 shipped 2026-09-13.
@@ -778,7 +819,9 @@ Written 2026-07-18 against branch claude/bulk-share-separate-links-auth-cblrle.
   regressed)
 - (e) still adopted: `grep -n "page=\${page}" lib/bunny.js` (two hits: videos
   and collections) — `itemsPerPage=100` alone with no `page` is the bug
-- (g) still adopted: `npm test` (expect 50+ passing); `ls tests/*.test.mjs`
+- (g) still adopted: `npm test` (expect 83+ passing); `ls tests/*.test.mjs tests/routes.*.test.mjs`
+- (r) still open: `grep -c "getServerSideProps" "pages/watch/[token].js"` —
+  while the access decision still lives in the JSX page, it is untestable
 - (m) still open: `grep -n "loadAllShares" lib/shareQuery.js pages/api` —
   while `/api/shares` still calls it, paging has not cut the read count
 - (f) still adopted: `grep -n "setEmailFailed" pages/api/share.js` (failure is flagged, not 500'd)

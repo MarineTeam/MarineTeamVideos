@@ -55,20 +55,34 @@ See [FEATURES.md](./FEATURES.md) for the full feature list and [CHANGELOG.md](./
 npm test
 ```
 
-Runs the `node --test` suite in `tests/` — no env vars, no network, no KV or
-mail provider needed. It covers the gate's signing/verification properties
-(round-trip, expiry, token binding, tamper rejection, malformed input),
-single-use grant marking, per-IP rate limiting, Bunny list pagination,
-watermark resolution order, recipient-email parsing, share status/filtering/
-paging, and CSV formula-injection escaping. The suite loads the app's real
-modules through a small test-only resolver hook (`tests/register.mjs`),
-because the source uses extensionless imports that Next resolves and plain
-Node does not.
+Runs the `node --test` suite in `tests/` — 83 cases, no env vars, no
+network, no KV or mail provider needed.
 
-These are unit tests. They do not prove the live email path, Bunny playback,
-or anything requiring real Resend/Bunny/KV credentials — see the project
-skills in `.claude/skills/` for the manual end-to-end procedures that cover
-those.
+**Unit tests** cover the gate's signing and verification properties
+(round-trip, expiry, token binding, byte-level tamper rejection, malformed
+input), single-use grant marking, per-IP rate limiting, Bunny list
+pagination, watermark resolution order, recipient-email parsing, share
+status/filtering/paging, and CSV formula-injection escaping.
+
+**Route tests** (`tests/routes.*.test.mjs`) exercise the API routes
+themselves against in-memory stand-ins for the two services they talk to,
+driven by a single `fetch` stub. They check that every outcome of the public
+sign-in endpoints is byte-identical, that the per-IP cap actually stops
+emails going out, that an access request only ever fires for an expired link
+with a matching address, that the first-play notification fires exactly once
+per share, and that notes, view caps, filters, paging and the CSV export
+behave.
+
+The suite loads the app's real modules through a small test-only resolver
+hook (`tests/register.mjs`), because the source uses extensionless imports
+that Next resolves and plain Node does not.
+
+Two honest limits. Nothing here touches a real service, so the live email
+path and Bunny playback are still unproven. And nothing inside a `.js` file
+containing JSX can be imported by plain Node, so the grant-to-cookie
+exchange on the watch and bundle pages is covered only by its underlying
+primitives plus a manual checklist. See `.claude/skills/` for the end-to-end
+procedures that cover both gaps.
 
 ## Environment variables
 

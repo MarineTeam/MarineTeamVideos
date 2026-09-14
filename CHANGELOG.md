@@ -120,11 +120,40 @@ Nine version tags mark points release notes were cut from this history:
   from the requester, only sends on an address match, throttled per share per
   hour plus the per-IP cap, and uniform response on every branch.
 
+- **Route-level test suite** (`tests/helpers/harness.mjs`,
+  `tests/routes.*.test.mjs`). Takes the suite from 50 to 83 cases and closes
+  the coverage gap the rest of this batch shipped with. One
+  `globalThis.fetch` router stands in for BOTH the Upstash REST API and the
+  Resend HTTP API — both are plain fetch clients, so no module mocking and
+  still no new dependency — plus Next-style request/response doubles. Covers
+  the two public sign-in endpoints (all outcome branches byte-identical, the
+  per-IP cap actually stopping sends, per-IP bucket isolation, the per-share
+  throttle, grant token-binding and TTL), the access-request endpoint
+  (expired-only, match-only, never for a revoked share, hourly throttle, and
+  that extra body fields never reach the admin's inbox), playback tracking
+  (first play notifies exactly once ever, a mailer failure never fails the
+  call, counters need a valid token-bound grant), and the admin surfaces
+  (note and cap persistence and escaping, failed-send flagging, status
+  filters, search, paging clamps, unpaged filtered CSV export with formula
+  neutralization, analytics counting every share rather than one page).
+  This is the first time the uniform-response invariant has been checked by
+  byte-comparing the branches instead of counting greps.
+- **Fixed a test that passed for the wrong reason.** The existing
+  "rejects a tampered signature" case flipped the last base64url character
+  of the signature. A 32-byte HMAC encodes to 43 characters whose last
+  carries only 4 significant bits, so several distinct final characters
+  decode to identical bytes; the tamper was frequently a no-op and
+  `verifyGrant` was correctly accepting an untampered signature. It failed
+  only when a run produced a signature ending in `A`, which is why it
+  passed alone and failed in the full suite. Now tampers at the byte level
+  and asserts the bytes actually changed, plus a new wrong-length case.
+
 ### Verified
 - `npm run build` clean; all new routes register (`/api/shares/export`,
   `/api/watch/request-access`, `/api/analytics`), `Proxy (Middleware)` still registers with the
   async middleware.
-- `npm test` — 50/50 passing.
+- `npm test` — 83/83 passing, stable across eight consecutive runs (the
+  base64url flake above was found this way).
 - Invariant greps re-run: matcher unchanged
   (`["/", "/api/((?!watch/|bundle/).*)"]`), `bunnyshare:` prefix unchanged
   with no bare `share:` keys, `gate_<token>` cookie name and
@@ -139,10 +168,16 @@ Nine version tags mark points release notes were cut from this history:
   moved.
 
 ### Not yet exercised
-- No live pass against real Resend/Bunny/KV for any of the above. In
-  particular the single-use exchange, the per-IP limiter, the first-play
-  notification and the access-request flow have been proven by unit tests and
-  code reading, not against a real inbox or a deployed instance.
+- No live pass against real Resend/Bunny/KV for any of the above. The per-IP
+  limiter, the first-play notification and the access-request flow are now
+  covered by route tests against in-memory doubles, but doubles are not
+  services.
+- **The single-use grant exchange remains the weakest link.** It lives in
+  `getServerSideProps` inside JSX files that plain Node cannot import, so
+  only its primitives are automated. Opening the same magic link twice has
+  never been observed on a deployment. Extracting that logic so it can be
+  tested is now tracked as roadmap item (r), and it is the highest-value
+  testability change left in the repo.
 - Bunny pagination is verified against a stubbed API that reports
   `totalItems`, not against a real library of more than 100 videos.
 - The constant-time compare has not been measured for timing behaviour on

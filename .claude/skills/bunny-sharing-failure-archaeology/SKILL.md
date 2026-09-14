@@ -517,7 +517,41 @@ branch in both request-link handlers, the first-play notification in
 `/api/watch/track`, and the whole `/api/watch/request-access` flow. Do not
 read "50 tests passing" as "this batch is proven".
 
-**Status: BUILT, NOT CERTIFIED.** No live pass, no deploy.
+**Addendum, same day — route tests, and a test that passed for the wrong
+reason.** The evidence-shape table above was closed out within hours by
+adding a route-level harness (`tests/helpers/harness.mjs`): one
+`globalThis.fetch` router standing in for BOTH the Upstash REST API and the
+Resend HTTP API, since both are plain fetch clients. That took the suite
+from 50 to 83 cases and covered every API route in the batch. Invariant 4
+(uniform responses) is now checked by byte-comparing the branches rather
+than by counting `genericOk()` greps — the first time that has ever been
+true.
+
+Two things were learned doing it, both worth keeping:
+
+1. **A crypto test can be green and worthless.** The existing "rejects a
+   tampered signature" case tampered by flipping the LAST base64url
+   character of the signature. A 32-byte HMAC encodes to 43 characters, the
+   last carrying only 4 significant bits, so several distinct final
+   characters decode to the *same bytes* — the tamper was frequently not a
+   tamper, and `verifyGrant` correctly accepted an untampered signature. It
+   failed only on runs where the signature happened to end in `A`, which is
+   why it passed when run alone and failed in the full suite. Fixed by
+   tampering at the byte level (decode, XOR a byte, re-encode) with an
+   assertion that the bytes actually changed. **Generalize:** a mutation
+   test is only as good as its mutation; assert that the mutation is real
+   before trusting a rejection. And run the WHOLE suite — a flake that
+   depends on generated data will hide from a single-file run.
+2. **The remaining blind spot is architectural, not tooling.** The gate's
+   access decision could not be tested at all, because it lives inside
+   `getServerSideProps` in a JSX file that plain Node cannot parse and this
+   repo has no transform for. The honest response was to scope the tests to
+   what was reachable and open roadmap item (r) to extract that logic,
+   rather than either skipping the coverage silently or refactoring the
+   most security-sensitive page as a side effect of writing tests.
+
+**Status: BUILT, ROUTE-TESTED, NOT CERTIFIED.** No live pass, no deploy,
+and the JSX-bound half of the gate remains unautomated.
 
 ---
 

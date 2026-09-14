@@ -34,7 +34,8 @@ cheap rung underneath it. "It looks right" is still never evidence, and
 | Level | Evidence | Command / procedure | Proves |
 | --- | --- | --- | --- |
 | L0 | Production build passes | `npm run build` | Code compiles; routes register. Necessary, never sufficient. |
-| L0.5 | Unit suite passes | `npm test` | The pure helpers behave: gate crypto, single-use marking, per-IP counting, Bunny pagination, watermark resolution, email parsing, share filtering/paging, analytics rollup, CSV escaping. Says NOTHING about the routes that call them. |
+| L0.5 | Unit suite passes | `npm test` | The pure helpers behave: gate crypto, single-use marking, per-IP counting, Bunny pagination, watermark resolution, email parsing, share filtering/paging, analytics rollup, CSV escaping. |
+| L1.5 | Route suite passes | `npm test` (the `tests/routes.*.test.mjs` files) | The API ROUTES behave against in-memory doubles for KV and Resend: uniform-response identity, per-IP enforcement actually stopping sends, access-request constraints, first-play notification firing exactly once, note/cap persistence and escaping, listing filters and paging, CSV export. Still no real service, and nothing inside a JSX page. |
 | L1 | Gate self-test 9/9 | `node .claude/skills/bunny-sharing-diagnostics/scripts/gate-selftest.mjs` | lib/gate.js crypto contract holds. No network needed. |
 | L2 | Targeted live probe | kv-inspect / bunny-probe / email-probe (bunny-sharing-diagnostics) with real creds | The specific integration (KV, Bunny, email) works against real services |
 | L3 | Manual E2E checklist (below) | Deployed or dev instance, real accounts | The user-visible flow works end to end |
@@ -171,7 +172,9 @@ As of 2026-07-18:
 | One-bundle-per-email consolidation (findOrExtendBundle, getBundleItems — both share.js and share-bulk.js) | CERTIFIED against mocks (L2/L3) | 2026-07-20 (same day, follow-up): two separate single-share calls to the same address consolidated into one email with a stable bundle link; cross-endpoint (bulk then single) consolidation confirmed; orphan sweep folded in a manually-injected pre-existing record; a revoked orphan was correctly excluded; an unrelated recipient was unaffected. NOT yet tried at scale (many bundles/shares) or against real Resend |
 | Expiry extend, incl. bulk + bundle propagation (extendOne, extendBundleForToken — /api/share/extend, /api/share/extend-bulk) | CERTIFIED against mocks (L2/L3) | 2026-07-21: extending a not-yet-expired share added exactly the requested hours to its OLD expiry; extending an already-expired share correctly extended from now, not the stale expiry; a revoked share was correctly rejected with expiresAt unchanged; bulk extend with a mix of valid/nonexistent/revoked tokens reported per-token results without failing the batch; extending one bundle member correctly re-maxed the bundle's own expiresAt. Middleware boundary re-checked (both routes 401 without admin creds). NOT yet tried at scale or in production |
 | Bulk revoke, incl. idempotency (revokeOne — /api/revoke-bulk) | CERTIFIED against mocks (L2/L3) | 2026-07-21: bulk-revoked 2 of 3 shares plus 1 nonexistent token in one call → both flipped, third untouched, bogus one reported a clean failure; re-revoking an already-revoked token succeeded (idempotent, not an error); single-token /api/revoke's behavior confirmed unchanged post-refactor. Middleware boundary re-checked (401 without admin creds). NOT yet tried at scale or in production |
-| The 2026-09-13 batch (`5eb7245`): single-use links, per-IP limiting, constant-time compare, Bunny pagination, view caps, notes, first-play notification, access requests, shares filtering/paging, CSV export, server-side analytics | L0 + L0.5 ONLY | Build clean with all new routes registered; 50/50 unit tests; every invariant grep re-run. Deliberately NOT claimed higher: no route-level pass against mock KV/SMTP (unlike the July items above), no live pass, no deploy. The helpers are better covered than anything before them; the ROUTES that call them are less covered. See failure-archaeology Episode 12 |
+| The 2026-09-13 batch (`5eb7245`), API-route half: per-IP limiting, access requests, first-play notification, notes, view-cap persistence, shares filtering/paging, CSV export, server-side analytics | L0 + L0.5 + L1.5 | Build clean, all routes registered, 83/83 tests. Routes exercised directly against in-memory KV + Resend doubles, including byte-identity across all six uniform branches on both public endpoints — the first time invariant 4 has been checked by anything other than a grep count. Still no real service and no deploy |
+| The 2026-09-13 batch, JSX-page half: the single-use grant exchange, `maxViews` enforcement at render, geo enforcement | L0 ONLY | Cannot be automated until roadmap item (r) extracts the logic from the React files. The single-use PRIMITIVES are covered (`tests/kvBacked.test.mjs`) but the exchange that calls them is not. Use the §2 checklists manually |
+| Constant-time admin compare (`5eb7245`) | L0 + L0.5 | `tests/safeCompare.test.mjs` covers correctness. The TIMING property is argued from construction and has never been measured on Edge — do not claim it as verified |
 | Everything else live (real email delivery, gate E2E, bulk E2E, Bunny playback) | UNCERTIFIED | Never exercised against real services — bunny-sharing-email-gate-campaign is the path to certification |
 
 Update this table (via change-control) whenever a campaign phase or E2E
@@ -192,6 +195,11 @@ observed convention of avoiding new deps.
 | `tests/shares.test.mjs` | `parseEmails` fan-out across every separator, dedupe, `normalizeNote`, and `baseUrl`'s `SITE_URL` fail-loud with no Host fallback |
 | `tests/shareQuery.test.mjs` | Status derivation (revoked beats expired; the `maxViews` exhausted case), filters, paging clamps, analytics rollup |
 | `tests/csv.test.mjs` | Quoting, escaping, and formula-injection neutralization |
+| `tests/helpers/harness.mjs` | The route harness: one `globalThis.fetch` router standing in for BOTH the Upstash REST API and the Resend HTTP API (both are plain fetch clients, so no module mocking and no new dependency), plus Next-style `req`/`res` doubles and a `fingerprint()` used to byte-compare uniform responses |
+| `tests/routes.gate.test.mjs` | `/api/watch/request-link`: all six outcome branches byte-identical, only a matching address sends, the per-share throttle, the per-IP cap stopping sends at 10/min with bucket isolation, and the minted grant's token-binding, TTL and SITE_URL-derived link |
+| `tests/routes.requestAccess.test.mjs` | `/api/watch/request-access`: expired-only and match-only sending, revoked never appealable, the hourly throttle, uniform responses across every branch, and that extra body fields (a `message`/`note`) never reach the admin's inbox |
+| `tests/routes.track.test.mjs` | `/api/watch/track`: first play notifies exactly once ever, the toggle gates it, a mailer failure never fails the call, counters cannot be inflated without a valid token-bound grant, revoked/expired shares reject, progress is monotonic |
+| `tests/routes.shares.test.mjs` | `/api/share` (note and cap persistence, absent-when-omitted, bad caps refused, HTML escaping, failed-send flagging), `/api/shares` (status filters incl. exhausted, search, paging and clamping, both totals), `/api/shares/export` (unpaged, filtered, formula neutralization, headers), `/api/analytics` (counts every share, not one page) |
 
 **The resolver hook.** The app's source uses extensionless relative imports
 (`from "./kv"`), which Next's bundler resolves and plain Node ESM does not.
@@ -200,23 +208,41 @@ failed relative resolution with `.js`. Nothing shipped depends on it. If
 anyone later adds `"type": "module"` or rewrites the imports, DELETE the
 hook rather than keeping two mechanisms.
 
-**What it deliberately does not cover, and what to add next.** No API route,
-no React component, no real service. The Analytics near-miss in
-failure-archaeology Episode 12 — a rollup that silently narrowed to one page
-— would NOT have been caught by this suite, which is the clearest available
-statement of its blind spot.
+**What it deliberately does not cover.** The remaining blind spot is
+specific and worth stating exactly: **anything inside a JSX file.** Plain
+Node cannot parse JSX and this repo has no transform available (only
+`@swc/helpers`, a runtime shim, is installed). So these are untested:
+
+- the grant→cookie exchange and single-use spend in
+  `pages/watch/[token].js` and `pages/bundle/[bundleId].js`;
+- the `maxViews` and geo enforcement in those same `getServerSideProps`;
+- every React component, including the Analytics panel whose near-miss is
+  recorded in failure-archaeology Episode 12.
+
+The underlying cause is a DESIGN issue, not a tooling gap: the app's most
+security-critical decision path lives welded to a React file. Extracting it
+into `lib/` is roadmap item (r), and it is the single highest-value change
+for testability in this repo.
 
 Next rung, in priority order:
-1. **Route-level tests against a mock KV + mock SMTP.** This is the shape
-   items (f) through (j) used manually in July; automating it would make the
-   2026-09-13 batch's untested routes (the single-use exchange, the per-IP
-   branch, `/api/watch/request-access`, the first-play notification)
-   evidenced rather than argued.
-2. **An anti-enumeration assertion**, diffing the actual response bytes of
-   all six `genericOk()` branches per endpoint. Invariant 4 is currently
-   protected only by a grep count.
-3. **CI**, so any of this runs without being remembered. Note the history
+1. **Roadmap item (r)** — extract the watch/bundle access decision out of
+   the JSX pages, then test the exchange directly. Until then the single-use
+   guarantee is evidenced only by its primitives (`tests/kvBacked.test.mjs`)
+   and the manual checklist in §2.
+2. **CI**, so any of this runs without being remembered. Note the history
    before proposing a scanner specifically (failure-archaeology Episode 5).
+3. **A real-service pass** — the L2/L3/L4 rungs. Unchanged in priority by
+   any of the above; doubles are not services.
+
+**A caution learned building this suite (2026-09-13).** One crypto test
+passed for the wrong reason: it "tampered" with a signature by flipping its
+last base64url character. A 32-byte HMAC encodes to 43 characters whose last
+carries only 4 significant bits, so several distinct final characters decode
+to identical bytes — the tamper was frequently a no-op, and the test failed
+only when a run happened to produce a signature ending in `A`. It was caught
+by running the whole suite rather than the one file. Tamper at the BYTE
+level (decode, flip, re-encode) and assert the bytes actually changed; a
+green crypto test proves nothing if the mutation it applies is not real.
 
 Keep `gate-selftest.mjs` regardless — it runs with no test infrastructure at
 all and is referenced by change-control's pre-push protocol.
@@ -248,7 +274,7 @@ was false as of that commit, the ladder gained L0.5, section 4 became a
 record of what shipped plus a ranked next rung, and the batch was added to
 the golden inventory at L0+L0.5 ONLY.
 
-- Tests present, CI still absent: `npm test` (expect 50+ passing);
+- Tests present, CI still absent: `npm test` (expect 83+ passing);
   `ls .github 2>&1` (expect: No such file).
 - Generic message string: `grep -n "sign-in link to it" pages/api/watch/request-link.js`.
 - 401 boundary: `grep -n "matcher" middleware.js` (expect `/api/((?!watch/|bundle/).*)`).

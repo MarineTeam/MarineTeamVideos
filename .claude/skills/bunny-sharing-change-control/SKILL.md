@@ -17,9 +17,11 @@ description: >
 # Change control for bunny-sharing
 
 This repo issues live, emailed `/watch/<token>` links to outside recipients. There
-is a unit test suite as of 2026-09-13 (`npm test`, 50 cases) but still NO CI
+is a test suite as of 2026-09-13 (`npm test`, 83 cases — unit plus
+route-level) but still NO CI
 (two scanner workflows were added and deleted in the past — do not assume CI
-exists), and the suite covers pure helpers only: no route, no component, no
+exists), and the suite covers helpers and API routes against in-memory
+doubles, but nothing inside a JSX page (the gate exchange included) and no
 real service. Nothing runs it for you. Verification is therefore still
 substantially manual, and this protocol IS the safety net. Follow it before
 every push.
@@ -166,7 +168,7 @@ failure to register would silently drop the entire admin auth boundary.)
 ```bash
 npm test
 ```
-50+ cases, no env vars, no network. Required for every class except (a)
+83+ cases, no env vars, no network. Required for every class except (a)
 docs-only. If your diff touched a pure helper — `lib/gate.js`,
 `lib/shares.js`, `lib/settings.js`, `lib/bunny.js`, `lib/shareQuery.js`,
 `lib/csv.js`, `lib/safeCompare.js`, `lib/singleUse.js`, `lib/rateLimit.js` —

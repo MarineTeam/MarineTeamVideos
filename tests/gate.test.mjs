@@ -29,11 +29,32 @@ test("rejects a grant bound to a different token", () => {
   assert.equal(verifyGrant(grant, { token: "b".repeat(32) }), null);
 });
 
+// Tamper at the BYTE level, not the character level. A base64url string's
+// final character carries unused low bits (a 32-byte HMAC encodes to 43
+// chars, the last holding only 4 significant bits), so two different final
+// characters can decode to identical bytes — flipping one is not a tamper
+// at all, and a test that does so silently passes for the wrong reason.
+// This version decodes, flips a byte, re-encodes, and asserts the bytes
+// really changed before relying on the result.
+function tamperSignature(sig) {
+  const raw = Buffer.from(sig.replace(/-/g, "+").replace(/_/g, "/"), "base64");
+  const flipped = Buffer.from(raw);
+  flipped[0] ^= 0xff;
+  assert.notDeepEqual(flipped, raw, "the tamper must actually change the decoded bytes");
+  return flipped.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
 test("rejects a tampered signature", () => {
   const grant = signGrant({ token: TOKEN, email: "a@b.com", expiresAt: future() });
   const [body, sig] = grant.split(".");
-  const flipped = sig.slice(0, -1) + (sig.endsWith("A") ? "B" : "A");
-  assert.equal(verifyGrant(`${body}.${flipped}`, { token: TOKEN }), null);
+  assert.equal(verifyGrant(`${body}.${tamperSignature(sig)}`, { token: TOKEN }), null);
+});
+
+test("rejects a signature of the wrong length", () => {
+  const grant = signGrant({ token: TOKEN, email: "a@b.com", expiresAt: future() });
+  const [body, sig] = grant.split(".");
+  assert.equal(verifyGrant(`${body}.${sig.slice(0, 20)}`, { token: TOKEN }), null);
+  assert.equal(verifyGrant(`${body}.${sig}AAAA`, { token: TOKEN }), null);
 });
 
 test("rejects a tampered payload", () => {
