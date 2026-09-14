@@ -18,10 +18,23 @@ export default function Admin() {
   const [resendingBulk, setResendingBulk] = useState(false);
   const [extendingBulk, setExtendingBulk] = useState(false);
   const [revokingBulk, setRevokingBulk] = useState(false);
+  const [allowingViewsBulk, setAllowingViewsBulk] = useState(false);
   // Per-share watermark override chosen in the share forms: "default" (inherit
   // the global setting), "on" (always), or "off" (never).
   const [watermark, setWatermark] = useState("default");
   const [bulkWatermark, setBulkWatermark] = useState("default");
+  // Optional per-share view cap and note, for both the single and bulk forms.
+  // Empty string means "not set", which the API reads as no cap / no note.
+  const [maxViews, setMaxViews] = useState("");
+  const [note, setNote] = useState("");
+  const [bulkMaxViews, setBulkMaxViews] = useState("");
+  const [bulkNote, setBulkNote] = useState("");
+  // Server-side filtering/paging for the shares table (see lib/shareQuery.js).
+  const [shareStatusFilter, setShareStatusFilter] = useState("all");
+  const [shareSearch, setShareSearch] = useState("");
+  const [sharePage, setSharePage] = useState(1);
+  const [sharesMeta, setSharesMeta] = useState({ total: 0, pageCount: 1, totalAll: 0 });
+  const [notifyFirstPlay, setNotifyFirstPlay] = useState(false);
   // Global watermark settings (edited in the Settings panel below).
   const [wmDefault, setWmDefault] = useState(false);
   const [wmEmails, setWmEmails] = useState("");
@@ -42,6 +55,10 @@ export default function Admin() {
   const [savingSettings, setSavingSettings] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showAnalytics, setShowAnalytics] = useState(false);
+  // Computed server-side over EVERY share (/api/analytics), never from the
+  // paged `shares` list on screen — otherwise opening Analytics would report
+  // only the current page while looking like it covered everything.
+  const [analytics, setAnalytics] = useState([]);
   // Private access list (YouTube-style "invite list") for one video: a
   // persistent, editable membership on top of the existing Share/Bulk Share
   // flows — see lib/invites.js. Adding an email that's already on the list
@@ -86,17 +103,48 @@ export default function Admin() {
     });
   }
 
+  // The shares table is filtered and paged SERVER-side (lib/shareQuery.js),
+  // so the browser only ever holds the rows currently on screen. Every
+  // refresh path goes through here so the current filter/page survives an
+  // action like Revoke or Extend.
+  function sharesQuery(overrides = {}) {
+    const params = new URLSearchParams();
+    const status = overrides.status ?? shareStatusFilter;
+    const q = overrides.q ?? shareSearch;
+    const page = overrides.page ?? sharePage;
+    if (status && status !== "all") params.set("status", status);
+    if (q.trim()) params.set("q", q.trim());
+    params.set("page", String(page));
+    return params.toString();
+  }
+
+  async function loadShares(overrides = {}) {
+    const sRes = await fetch(`/api/shares?${sharesQuery(overrides)}`).then((r) => r.json());
+    setShares(sRes.shares || []);
+    setSharesMeta({
+      total: sRes.total || 0,
+      pageCount: sRes.pageCount || 1,
+      totalAll: sRes.totalAll || 0,
+    });
+    // The server clamps the page to the available range; mirror whatever it
+    // actually served so the controls can't drift out of sync with the data.
+    if (sRes.page && sRes.page !== sharePage) setSharePage(sRes.page);
+  }
+
   async function loadAll() {
     setLoading(true);
-    const [vRes, sRes, setRes, gRes] = await Promise.all([
+    const [vRes, , setRes, gRes] = await Promise.all([
       fetch("/api/videos").then((r) => r.json()),
-      fetch("/api/shares").then((r) => r.json()),
+      loadShares(),
       fetch("/api/settings").then((r) => r.json()).catch(() => ({})),
       fetch("/api/groups").then((r) => r.json()).catch(() => ({})),
+      fetch("/api/analytics")
+        .then((r) => r.json())
+        .then((d) => setAnalytics(d.analytics || []))
+        .catch(() => {}),
     ]);
     setVideos(vRes.videos || []);
     setCollections(vRes.collections || []);
-    setShares(sRes.shares || []);
     if (setRes && setRes.settings) applySettings(setRes.settings);
     setGroups((gRes && gRes.groups) || []);
     setLoading(false);
@@ -189,6 +237,7 @@ export default function Admin() {
     setAdminGeoEnabled(!!s.adminGeoWhitelistEnabled);
     setAdminGeoCountries(s.adminGeoWhitelistCountries || []);
     setAdminGeoBypassEmails(s.adminGeoBypassEmails || []);
+    setNotifyFirstPlay(!!s.notifyOnFirstPlay);
   }
 
   // Current per-video override as a select value: "on" / "off" / "default".
@@ -231,6 +280,7 @@ export default function Admin() {
         watermarkExemptDomains: wmDomains,
         geoWhitelistEnabled: geoEnabled,
         adminGeoWhitelistEnabled: adminGeoEnabled,
+        notifyOnFirstPlay: notifyFirstPlay,
       }),
     });
     const data = await res.json();
@@ -258,6 +308,8 @@ export default function Admin() {
         email,
         hours,
         watermark: wmValue(watermark),
+        maxViews: maxViews === "" ? undefined : Number(maxViews),
+        note,
       }),
     });
     const data = await res.json();
@@ -275,6 +327,8 @@ export default function Admin() {
       setShareForVideo(null);
       setEmail("");
       setWatermark("default");
+      setMaxViews("");
+      setNote("");
       loadAll();
     } else {
       setMessage(`Error: ${data.error}`);
@@ -295,6 +349,8 @@ export default function Admin() {
         emails,
         hours: bulkHours,
         watermark: wmValue(bulkWatermark),
+        maxViews: bulkMaxViews === "" ? undefined : Number(bulkMaxViews),
+        note: bulkNote,
       }),
     });
     const data = await res.json();
@@ -313,6 +369,8 @@ export default function Admin() {
       setMessage(msg);
       setSelected(new Set());
       setBulkEmail("");
+      setBulkMaxViews("");
+      setBulkNote("");
       loadAll();
     } else {
       setMessage(`Error: ${data.error}`);
@@ -510,6 +568,53 @@ export default function Admin() {
     loadAll();
   }
 
+  // The view-cap counterpart of extend(): raises the cap, never resets the
+  // count, so a "Used up" link works again without losing the record of how
+  // often it was actually opened.
+  async function allowMoreViews(token) {
+    const viewsInput = prompt("Allow how many more views?", "5");
+    if (!viewsInput) return;
+    setMessage("Raising view limit...");
+    const res = await fetch("/api/share/allow-views", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token, views: Number(viewsInput) }),
+    });
+    const data = await res.json();
+    setMessage(
+      data.ok
+        ? `View limit raised to ${data.maxViews} (${data.viewCount} used so far)`
+        : `Error: ${data.error}`
+    );
+    loadAll();
+  }
+
+  async function allowMoreViewsSelected() {
+    const tokens = [...selectedShares];
+    if (tokens.length === 0) return;
+    const viewsInput = prompt(`Allow how many more views on ${tokens.length} link${tokens.length !== 1 ? "s" : ""}?`, "5");
+    if (!viewsInput) return;
+    setAllowingViewsBulk(true);
+    setMessage(`Raising view limit on ${tokens.length} link${tokens.length !== 1 ? "s" : ""}...`);
+    const res = await fetch("/api/share/allow-views-bulk", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tokens, views: Number(viewsInput) }),
+    });
+    const data = await res.json();
+    setAllowingViewsBulk(false);
+    if (data.ok) {
+      let msg = `Raised the view limit on ${data.succeeded.length} of ${tokens.length}`;
+      if (data.failures.length > 0) {
+        msg += ` — skipped ${data.failures.length}: ${data.failures.map((f) => f.error).join("; ")}`;
+      }
+      setMessage(msg);
+    } else {
+      setMessage(`Error: ${data.error}`);
+    }
+    loadAll();
+  }
+
   async function extendSelected() {
     const tokens = [...selectedShares];
     if (tokens.length === 0) return;
@@ -566,7 +671,16 @@ export default function Admin() {
   function statusOf(s) {
     if (s.revoked) return "Revoked";
     if (Date.now() > s.expiresAt) return "Expired";
+    // Mirrors the server-side check in pages/watch/[token].js: a share that
+    // has used up its view cap is spent, even though it hasn't expired.
+    if (s.maxViews && (s.viewCount || 0) >= s.maxViews) return "Used up";
     return "Active";
+  }
+
+  // CSS-class-safe form of statusOf(). Done separately because a label with
+  // a space in it ("Used up") would otherwise emit two class names.
+  function statusSlug(s) {
+    return statusOf(s).toLowerCase().replace(/[^a-z]/g, "");
   }
 
   if (loading)
@@ -577,7 +691,7 @@ export default function Admin() {
       </>
     );
 
-  const analytics = computeAnalytics(shares);
+
 
   return (
     <>
@@ -710,6 +824,24 @@ export default function Admin() {
             overlay for leak attribution, not burned into the video — it deters
             casual re-sharing, it isn't DRM.
           </p>
+
+          <h3>Notifications</h3>
+          <p style={styles.hint}>
+            Emails you the first time a recipient actually <em>plays</em> a
+            share — not merely opens the page, which the Views column already
+            tracks. You get at most one per share, ever: it fires only when a
+            share that has never been played is played. Sends to{" "}
+            <code>ADMIN_NOTIFY_EMAIL</code>, falling back to your configured
+            from-address; with neither set this toggle has no effect.
+          </p>
+          <label style={{ display: "block", marginBottom: 12 }}>
+            <input
+              type="checkbox"
+              checked={notifyFirstPlay}
+              onChange={(e) => setNotifyFirstPlay(e.target.checked)}
+            />{" "}
+            Email me when a share is first played
+          </label>
 
           <h3>Geo location whitelist</h3>
           <p style={styles.hint}>
@@ -867,6 +999,26 @@ export default function Admin() {
               <option value="off">Never</option>
             </select>
           </label>
+          <label style={{ whiteSpace: "nowrap" }} title="Leave blank for unlimited views">
+            Max views:{" "}
+            <input
+              type="number"
+              min="1"
+              placeholder="∞"
+              value={bulkMaxViews}
+              onChange={(e) => setBulkMaxViews(e.target.value)}
+              className="input"
+              style={{ width: 70, display: "inline-block" }}
+            />
+          </label>
+          <input
+            type="text"
+            placeholder="note to recipients (optional)"
+            value={bulkNote}
+            onChange={(e) => setBulkNote(e.target.value)}
+            className="input"
+            style={{ flex: "1 1 200px", width: "auto" }}
+          />
           <button
             onClick={submitBulk}
             disabled={!bulkEmail || bulkSending}
@@ -984,6 +1136,30 @@ export default function Admin() {
                 <option value="on">Always</option>
                 <option value="off">Never</option>
               </select>
+            </div>
+            <div style={{ marginTop: 12 }}>
+              <label style={styles.fieldLabel}>Max views (blank = unlimited)</label>
+              <input
+                type="number"
+                min="1"
+                placeholder="unlimited"
+                value={maxViews}
+                onChange={(e) => setMaxViews(e.target.value)}
+                className="input"
+                style={{ width: 100 }}
+              />
+            </div>
+            <div style={{ marginTop: 12 }}>
+              <label style={styles.fieldLabel}>Note to recipient (optional)</label>
+              <textarea
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                className="input"
+                rows={3}
+                maxLength={500}
+                placeholder="Here's the cut for review — timecodes in the doc."
+                style={{ width: "100%", resize: "vertical" }}
+              />
             </div>
             <div style={{ marginTop: 20, display: "flex", gap: 8 }}>
               <button onClick={() => submitShare(shareForVideo)} className="btn btn-primary">
@@ -1113,6 +1289,9 @@ export default function Admin() {
           <button onClick={extendSelected} disabled={extendingBulk} className="btn btn-primary">
             {extendingBulk ? "Extending..." : `Extend ${selectedShares.size}`}
           </button>
+          <button onClick={allowMoreViewsSelected} disabled={allowingViewsBulk} className="btn btn-primary">
+            {allowingViewsBulk ? "Raising..." : `+ Views ${selectedShares.size}`}
+          </button>
           <button onClick={revokeSelected} disabled={revokingBulk} className="btn btn-danger">
             {revokingBulk ? "Revoking..." : `Revoke ${selectedShares.size}`}
           </button>
@@ -1121,6 +1300,63 @@ export default function Admin() {
           </button>
         </div>
       )}
+
+      <div style={styles.tableToolbar}>
+        <input
+          type="search"
+          placeholder="Search email or video title"
+          value={shareSearch}
+          onChange={(e) => setShareSearch(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              setSharePage(1);
+              loadShares({ page: 1 });
+            }
+          }}
+          className="input"
+          style={{ flex: "1 1 220px", width: "auto" }}
+        />
+        <button
+          onClick={() => {
+            setSharePage(1);
+            loadShares({ page: 1 });
+          }}
+          className="btn btn-secondary"
+        >
+          Search
+        </button>
+        <select
+          value={shareStatusFilter}
+          onChange={(e) => {
+            const status = e.target.value;
+            setShareStatusFilter(status);
+            setSharePage(1);
+            loadShares({ status, page: 1 });
+          }}
+          style={{ flex: "0 0 auto", width: "auto" }}
+        >
+          <option value="all">All statuses</option>
+          <option value="active">Active</option>
+          <option value="expired">Expired</option>
+          <option value="exhausted">Used up</option>
+          <option value="revoked">Revoked</option>
+          <option value="failed">Email failed</option>
+        </select>
+        <span style={styles.subtitle}>
+          {sharesMeta.total === sharesMeta.totalAll
+            ? `${sharesMeta.total} share${sharesMeta.total !== 1 ? "s" : ""}`
+            : `${sharesMeta.total} of ${sharesMeta.totalAll} shares`}
+        </span>
+        {/* A plain link, not a fetch: the browser handles the download and
+            sends the same Basic Auth credentials it already has. */}
+        <a
+          href={`/api/shares/export?${sharesQuery()}`}
+          className="btn btn-secondary"
+          style={{ textDecoration: "none" }}
+        >
+          ⬇ Export CSV
+        </a>
+      </div>
 
       <div className="table-scroll">
       <table className="data-table">
@@ -1165,6 +1401,11 @@ export default function Admin() {
                       no-wm
                     </span>
                   )}
+                  {s.note && (
+                    <div style={styles.noteLine} title={s.note}>
+                      📝 {s.note}
+                    </div>
+                  )}
                 </td>
                 <td>{s.email}</td>
                 <td>
@@ -1199,7 +1440,7 @@ export default function Admin() {
                   )}
                 </td>
                 <td>
-                  <span className={`status-pill status-${statusOf(s).toLowerCase()}`}>{statusOf(s)}</span>
+                  <span className={`status-pill status-${statusSlug(s)}`}>{statusOf(s)}</span>
                   {s.emailFailed && (
                     <div style={styles.emailFailedBadge} title={s.emailError || "Email failed to send"}>
                       ⚠ email failed
@@ -1208,6 +1449,11 @@ export default function Admin() {
                 </td>
                 <td title={s.lastViewedAt ? `Last viewed ${new Date(s.lastViewedAt).toLocaleString()}` : "Never viewed"}>
                   {s.viewCount ? `${s.viewCount}×` : "—"}
+                  {s.maxViews && (
+                    <span style={styles.capBadge} title={`Limited to ${s.maxViews} view${s.maxViews !== 1 ? "s" : ""}`}>
+                      / {s.maxViews}
+                    </span>
+                  )}
                 </td>
                 <td title={s.lastPlayedAt ? `Last played ${new Date(s.lastPlayedAt).toLocaleString()}${s.playCount ? `, ${s.playCount} play${s.playCount !== 1 ? "s" : ""}` : ""}` : "Never played"}>
                   {s.completedAt ? "100% ✓" : s.maxProgressPct ? `${s.maxProgressPct}%` : s.playCount ? "started" : "—"}
@@ -1222,6 +1468,15 @@ export default function Admin() {
                   {extendable && (
                     <button onClick={() => extend(s.token)} className="btn btn-secondary" style={styles.rowBtn}>
                       Extend
+                    </button>
+                  )}
+                  {/* Only offered where there is actually a cap to raise.
+                      An uncapped share is already unlimited, and imposing a
+                      cap is a tightening of access — a separate, deliberate
+                      action, not something "allow more views" should do. */}
+                  {extendable && s.maxViews && (
+                    <button onClick={() => allowMoreViews(s.token)} className="btn btn-secondary" style={styles.rowBtn}>
+                      + Views
                     </button>
                   )}
                   {active && (
@@ -1246,6 +1501,36 @@ export default function Admin() {
         </tbody>
       </table>
       </div>
+
+      {sharesMeta.pageCount > 1 && (
+        <div style={styles.pager}>
+          <button
+            onClick={() => {
+              const page = sharePage - 1;
+              setSharePage(page);
+              loadShares({ page });
+            }}
+            disabled={sharePage <= 1}
+            className="btn btn-secondary"
+          >
+            ← Previous
+          </button>
+          <span style={styles.subtitle}>
+            Page {sharePage} of {sharesMeta.pageCount}
+          </span>
+          <button
+            onClick={() => {
+              const page = sharePage + 1;
+              setSharePage(page);
+              loadShares({ page });
+            }}
+            disabled={sharePage >= sharesMeta.pageCount}
+            className="btn btn-secondary"
+          >
+            Next →
+          </button>
+        </div>
+      )}
     </div>
     <QueryMonitorPanel />
     </>
@@ -1255,52 +1540,32 @@ export default function Admin() {
 // Rolls the per-share tracking fields up per video for the Analytics panel.
 // Reads only additive fields already present on records (viewCount, playCount,
 // maxProgressPct, completedAt) — nothing new is stored for this.
-function computeAnalytics(shares) {
-  const byVideo = new Map();
-  for (const s of shares) {
-    const key = s.videoId;
-    let a = byVideo.get(key);
-    if (!a) {
-      a = {
-        videoId: key,
-        title: s.videoTitle || key,
-        shares: 0,
-        recipients: new Set(),
-        views: 0,
-        started: 0,
-        completed: 0,
-        progressSum: 0,
-        progressCount: 0,
-      };
-      byVideo.set(key, a);
-    }
-    a.shares += 1;
-    if (s.email) a.recipients.add(String(s.email).toLowerCase());
-    a.views += s.viewCount || 0;
-    if (s.playCount || s.maxProgressPct || s.completedAt) a.started += 1;
-    if (s.completedAt) a.completed += 1;
-    if (s.maxProgressPct) {
-      a.progressSum += s.maxProgressPct;
-      a.progressCount += 1;
-    }
-  }
-  return [...byVideo.values()]
-    .map((a) => ({
-      videoId: a.videoId,
-      title: a.title,
-      shares: a.shares,
-      recipients: a.recipients.size,
-      views: a.views,
-      started: a.started,
-      completed: a.completed,
-      completionRate: a.shares ? Math.round((a.completed / a.shares) * 100) : 0,
-      avgProgress: a.progressCount ? Math.round(a.progressSum / a.progressCount) : 0,
-    }))
-    .sort((x, y) => y.shares - x.shares || y.views - x.views);
-}
-
 const styles = {
   wrap: { maxWidth: 1100, margin: "0 auto", padding: "28px 20px 60px" },
+  tableToolbar: {
+    display: "flex",
+    gap: 8,
+    flexWrap: "wrap",
+    alignItems: "center",
+    marginBottom: 12,
+  },
+  pager: {
+    display: "flex",
+    gap: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 16,
+  },
+  capBadge: { color: "#57606a", fontSize: 12, marginLeft: 2 },
+  noteLine: {
+    color: "#57606a",
+    fontSize: 12,
+    marginTop: 2,
+    maxWidth: 260,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  },
   header: { marginBottom: 20 },
   h1: { margin: "0 0 4px", fontSize: 28 },
   subtitle: { margin: 0, color: "#57606a", fontSize: 14 },

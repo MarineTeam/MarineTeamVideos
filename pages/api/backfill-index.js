@@ -1,11 +1,11 @@
-import { kvKeys, kvSadd } from "../../lib/kv";
-import { SHARE_INDEX_KEY } from "../../lib/shares";
+import { kvKeys, kvGet, kvSadd, kvZadd } from "../../lib/kv";
+import { SHARE_INDEX_KEY, SHARE_BY_CREATED_KEY } from "../../lib/shares";
 import { BUNDLE_INDEX_KEY } from "../../lib/bundles";
 import { withApiMonitor } from "../../lib/withMonitor";
 
 // Admin-only, one-time migration (idempotent — SADD naturally dedupes, so
 // it's safe to re-run). Populates the bunnyshare-index / bunnybundle-index
-// SETs (lib/shares.js, lib/bundles.js) from whatever bunnyshare:*/
+// SETs and the bunnyshare-by-created sorted set (lib/shares.js, lib/bundles.js) from whatever bunnyshare:*/
 // bunnybundle:* records already exist, using the one full-keyspace KEYS
 // scan this whole change was meant to eliminate from the hot paths (admin
 // listing, cleanup, every share/bundle lookup) — every other route now
@@ -24,6 +24,21 @@ async function handler(req, res) {
     const shareKeys = await kvKeys("bunnyshare:*");
     const shareTokens = shareKeys.map((k) => k.slice("bunnyshare:".length));
     await Promise.all(shareTokens.map((t) => kvSadd(SHARE_INDEX_KEY, t)));
+
+    // Also seed the createdAt-ordered index (added 2026-09-13). This one
+    // needs each record's createdAt as its score, so unlike the plain set it
+    // costs one GET per share — still a one-time cost, and still idempotent
+    // (ZADD on an existing member just updates the score to the same value).
+    // A record with no usable createdAt is scored 0 rather than skipped: it
+    // sorts to the bottom of the listing, which is wrong-ish but visible,
+    // whereas skipping it would make the share silently invisible — the
+    // failure mode this whole endpoint exists to prevent.
+    const shareRecords = await Promise.all(shareTokens.map((t) => kvGet(`bunnyshare:${t}`)));
+    await Promise.all(
+      shareTokens.map((t, i) =>
+        kvZadd(SHARE_BY_CREATED_KEY, Number(shareRecords[i] && shareRecords[i].createdAt) || 0, t)
+      )
+    );
 
     const bundleKeys = await kvKeys("bunnybundle:*");
     const bundleIds = bundleKeys.map((k) => k.slice("bunnybundle:".length));

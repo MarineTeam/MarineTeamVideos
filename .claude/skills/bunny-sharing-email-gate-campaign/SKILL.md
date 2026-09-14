@@ -178,28 +178,59 @@ observation log lives. The campaign is then complete.
 
 ## Hardening menu (post-certification, ranked; ALL are candidates gated by change-control)
 
-1. **Single-use magic links.** Mechanism: on grant→cookie exchange in
-   pages/watch/[token].js, write `gateused:<sha256(grant)>` to KV (kvSetEx,
-   TTL = grant remaining life) and reject grants whose hash exists. Trade-off:
-   adds KV state to a deliberately stateless design (read
-   architecture-contract first); an email-client link-prefetcher could consume
-   the grant before the human clicks — mitigate by consuming only on the
-   cookie-setting exchange. Effort: small. Live-link risk: none (new grants
-   only). Validation predicate: opening the same magic link twice → second
-   attempt shows the expiry notice; P2 suite still passes.
-2. **Per-IP rate limiting on /api/watch/request-link.** Today's throttle is
-   per-token only; an attacker can spray many tokens. Mechanism: kvSetEx
-   `gateip:<ip>` counter (mind Vercel's `x-forwarded-for`). Validation: >N
-   requests/min from one IP → uniform 200s continue but no emails send; legit
-   flows unaffected. Live-link risk: none.
-3. **Cookie/grant lifetime tuning.** Cookie currently lives until share
+1. **Single-use magic links. — BUILT 2026-09-13 (`5eb7245`), NOT YET
+   CERTIFIED LIVE.** Implemented exactly as this menu specified:
+   `gateused:<sha256(grant)>` via kvSetEx, TTL = grant remaining life,
+   consumed ONLY on the cookie-setting exchange (the prefetcher mitigation
+   this entry called for), in `lib/singleUse.js`, wired into both
+   `pages/watch/[token].js` and `pages/bundle/[bundleId].js`. One decision
+   beyond the spec: a spent grant falls through to the SAME expiry notice as
+   a stale one rather than a distinct "already used" message, so a replay is
+   indistinguishable from an expired link. Best-effort — KV errors fail open
+   to the old replayable behaviour rather than locking out a valid holder.
+   **Validation predicate still unmet, and this one is the weakest link in
+   the batch:** the exchange that spends the grant lives in a JSX page that
+   the test suite cannot import (roadmap item (r)), so only the PRIMITIVES
+   are automated (`tests/kvBacked.test.mjs`). Opening the same magic link
+   twice has never been observed on any deployment. Run the
+   validation-and-qa §2 single-use checklist during P3 — it is currently
+   the ONLY evidence this feature works end to end — and re-run the P2
+   uniformity suite, since the spent-grant branch is new and must not have
+   become distinguishable.
+2. **Per-IP rate limiting. — BUILT 2026-09-13 (`5eb7245`), NOT YET CERTIFIED
+   LIVE.** `lib/rateLimit.js`, `gateip:<ip>` counter with a 60s window, 10
+   requests/min, reading the first `x-forwarded-for` entry as this entry
+   advised. Applied to BOTH request-link endpoints and also to the new
+   `/api/watch/request-access`. Placed before any `kvGet` so a spray costs
+   one read. Over-limit returns the same `genericOk()`. This is now
+   asserted automatically: `tests/routes.gate.test.mjs` byte-compares all
+   six outcome branches (success, wrong email, unknown token, revoked,
+   expired, throttled) plus the rate-limited one, and separately proves the
+   cap stops sends at 10/min with per-IP bucket isolation. **Validation
+   predicate still partly unmet:** that is against an in-memory double, so
+   a live test of >N requests/min from a real edge, and the non-atomic
+   counter's behaviour under real concurrency, remain unmeasured.
+3. **Cookie/grant lifetime tuning.** NOW THE ONLY UNBUILT ITEM except the
+   deliberately-fenced OTP fallback (5).
+   Note the new interaction: magic links became single-use in item 1, so
+   shortening cookie life means more round-trips through a one-shot
+   credential. Decide 1 and 3 together, not independently. Cookie currently lives until share
    expiry (up to caller-chosen hours); consider capping cookie Max-Age
    (e.g. 24 h) forcing periodic re-verification. Pure policy choice;
    validation: cookie expiry observed in devtools; UX cost acknowledged.
-4. **Audit log of grant exchanges.** Append-only KV entries
-   (`gatelog:<ts>`) on each exchange: token, hashed email, IP. Enables
-   incident forensics. Validation: entries appear on each exchange; no PII
-   beyond what records already hold.
+4. **Audit log of grant exchanges. — BUILT 2026-09-13, NOT YET CERTIFIED
+   LIVE.** `lib/gateLog.js`, read at `/api/gate-log`. Built close to this
+   sketch with three tightenings, each explained in roadmap item (n): the
+   key carries a random suffix so same-millisecond exchanges cannot
+   overwrite one another; entries expire after 90 days rather than
+   accumulating forever; and writes never throw, so the log can never break
+   a sign-in. The email is hashed as specified, so the "no PII beyond what
+   records already hold" predicate is met by construction — the log holds
+   strictly LESS than the records do. **Validation predicate still unmet:**
+   "entries appear on each exchange" is proven against in-memory doubles,
+   never on a deployment. Check it during P3: complete a real gate flow,
+   then `curl -u admin /api/gate-log` and confirm the entry, its IP, and
+   that the fingerprint matches the recipient on the share record.
 5. **OTP fallback.** Previously considered and NOT chosen for v1 (see
    bunny-sharing-failure-archaeology — magic link won; OTP remains a valid
    alternative where corporate mail mangles links). Only pursue on real user
@@ -213,8 +244,12 @@ observation log lives. The campaign is then complete.
 - Do NOT switch to Auth0/Clerk — evaluated and rejected 2026-07-18
   (failure-archaeology); the HMAC gate is the accepted design.
 - Do NOT "fix" statelessness by moving grants into KV wholesale — read the
-  architecture-contract trade-off first; hardening item 1 is the bounded
-  exception.
+  architecture-contract trade-off first (section 2.2 now documents the
+  bounded exception explicitly). Item 1 shipped as that exception and is the
+  ONLY licence: it stores a hash, only for emailed grants, only at the
+  exchange, with a self-expiring TTL, and `verifyGrant` itself stayed pure.
+  Widening any one of those properties is a new decision, not a continuation
+  of this one.
 - Do NOT relax response uniformity to give recipients "clearer errors" — the
   uniform 200 is a security invariant (change-control non-negotiable), not a
   UX bug.
@@ -236,3 +271,10 @@ Written 2026-07-18 against branch claude/bulk-share-separate-links-auth-cblrle
 - Expiry-notice string: `grep -n "sign-in link has expired" pages/watch/[token].js`
 - Crafted-grant one-liner still runs: see P2.4 (needs GATE_SECRET in env)
 - Certification status: check bunny-sharing-validation-and-qa §3 — if already CERTIFIED with a date, this campaign has been run; only re-run after gate-surface changes.
+- **The gate surface DID change on 2026-09-13 (`5eb7245`)**: single-use
+  marking and per-IP limiting both touch the gate path. If this campaign was
+  ever run before that date, its P2 (uniformity) and P3 (live flow) results
+  are stale and must be re-run. As of that commit the campaign has NOT been
+  run at all, so the gate remains uncertified either way.
+- Single-use still wired? `grep -n "isGrantSpent" "pages/watch/[token].js" "pages/bundle/[bundleId].js"`
+- Per-IP still wired? `grep -n "allowRequestFromIp" pages/api/watch/request-link.js pages/api/bundle/request-link.js pages/api/watch/request-access.js`

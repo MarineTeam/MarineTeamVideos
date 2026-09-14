@@ -12,7 +12,7 @@ async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).end();
 
   try {
-    const { videos, emails, email, groupIds, hours, watermark } = req.body;
+    const { videos, emails, email, groupIds, hours, watermark, maxViews, note } = req.body;
     // parseEmails splits comma/semicolon/whitespace-joined strings in BOTH
     // shapes — a legacy client sending email:"a@b.c, d@e.f" must fan out to
     // two recipients, never become one record with a combined email string.
@@ -45,6 +45,8 @@ async function handler(req, res) {
           hours,
           siteUrl,
           watermark: typeof watermark === "boolean" ? watermark : undefined,
+          maxViews,
+          note,
         });
         created.push({ token: record.token, videoId, videoTitle: record.videoTitle, link, expiresAt: record.expiresAt });
       }
@@ -71,6 +73,7 @@ async function handler(req, res) {
           items,
           expiresAt: bundle.expiresAt,
           bundleLink,
+          note,
         });
         results.push({ email: to, links: created.map((c) => ({ videoId: c.videoId, link: c.link })), bundleLink });
       } catch (err) {

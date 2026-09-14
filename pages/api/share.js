@@ -7,7 +7,7 @@ async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).end();
 
   try {
-    const { videoId, videoTitle, email, hours, watermark } = req.body;
+    const { videoId, videoTitle, email, hours, watermark, maxViews, note } = req.body;
     const recipients = parseEmails(email);
     if (!videoId || recipients.length === 0) {
       return res.status(400).json({ error: "videoId and email are required" });
@@ -26,6 +26,8 @@ async function handler(req, res) {
         hours,
         siteUrl,
         watermark: typeof watermark === "boolean" ? watermark : undefined,
+        maxViews,
+        note,
       });
 
       // Every recipient gets (or extends) a bundle, so a later share to the
@@ -43,13 +45,14 @@ async function handler(req, res) {
       try {
         if (bundle.tokens.length > 1) {
           const items = await getBundleItems(bundle.tokens, siteUrl);
-          await sendBulkShareEmail({ to, items, expiresAt: bundle.expiresAt, bundleLink });
+          await sendBulkShareEmail({ to, items, expiresAt: bundle.expiresAt, bundleLink, note });
         } else {
           await sendShareEmail({
             to,
             videoTitle: record.videoTitle,
             link,
             expiresAt: record.expiresAt,
+            note,
           });
         }
         links.push({ email: to, link, bundleLink });

@@ -17,9 +17,14 @@ description: >
 # Change control for bunny-sharing
 
 This repo issues live, emailed `/watch/<token>` links to outside recipients. There
-are no automated tests and no CI (as of 2026-07-18; two scanner workflows were
-added and deleted in the past — do not assume CI exists). Verification is manual,
-so this protocol IS the safety net. Follow it before every push.
+is a test suite as of 2026-09-13 (`npm test`, 83 cases — unit plus
+route-level) but still NO CI
+(two scanner workflows were added and deleted in the past — do not assume CI
+exists), and the suite covers helpers and API routes against in-memory
+doubles, but nothing inside a JSX page (the gate exchange included) and no
+real service. Nothing runs it for you. Verification is therefore still
+substantially manual, and this protocol IS the safety net. Follow it before
+every push.
 
 **Prime directive (maintainer-stated): NEVER BREAK LIVE LINKS.** Every token ever
 emailed must keep resolving; every `bunnyshare:*` record already in Redis must keep
@@ -44,10 +49,10 @@ in doubt, classify UP.
 
 | Class | Examples in this repo | Required verification before push |
 | --- | --- | --- |
-| (a) Safe | README prose, comments, inline `styles` objects in pages/index.js or pages/watch/[token].js, admin-UI cosmetics (labels, layout) that do not change fetch calls or form payloads | `npm run build` succeeds |
+| (a) Safe | README prose, comments, inline `styles` objects in pages/index.js or pages/watch/[token].js, admin-UI cosmetics (labels, layout) that do not change fetch calls or form payloads; anything under `tests/` | `npm run build` succeeds (plus `npm test` if you touched `tests/`) |
 | (b) Behavior-affecting | pages/api/* handler logic, lib/mailer.js routing/templates, lib/bunny.js, lib/kv.js, middleware.js (including any rename to the `proxy` convention — the build's deprecation warning tempts this; renaming changes auth coverage and is NOT cosmetic), admin UI flows (share modal, bulk bar, revoke button payloads), cleanup logic | Full protocol in section 3, plus manually exercise the changed flow end-to-end (dev server or deploy preview) |
 | (c) Compatibility-critical | Anything touching: token format (`crypto.randomBytes(16).toString("hex")`, lib/shares.js:13), the `bunnyshare:` key prefix or record field names/meanings, `/watch/<token>` URL shape, `gate_<token>` cookie name or its `Path=/watch/<token>`, GATE_SECRET semantics (what is signed, how, with what), grant payload/format (`{t,e,x}` + b64url encoding), the `gatethrottle:<token>` key only if repurposed | Section 3 protocol PLUS the backward-compat checklist in section 4. Old artifacts must demonstrably still work |
-| (d) Security-sensitive | lib/mailer.js HTML construction (escapeHtml/isValidUrl paths), pages/api/watch/request-link.js responses, middleware.js matcher/auth logic, lib/gate.js crypto, baseUrl() in lib/shares.js | Section 3 protocol PLUS re-verify every invariant grep in section 3 step 3, and re-read section 2 line by line against the diff |
+| (d) Security-sensitive | lib/mailer.js HTML construction (escapeHtml/isValidUrl paths), pages/api/watch/request-link.js AND pages/api/watch/request-access.js AND pages/api/bundle/request-link.js responses, middleware.js matcher/auth logic, lib/gate.js crypto, baseUrl() in lib/shares.js, lib/safeCompare.js, lib/singleUse.js, lib/rateLimit.js | Section 3 protocol PLUS re-verify every invariant grep in section 3 step 3, and re-read section 2 line by line against the diff |
 
 Classes overlap: middleware.js is both (b) and (d); lib/gate.js is (c) AND (d).
 Apply the union of requirements.
@@ -153,7 +158,23 @@ Must succeed with zero errors. As of 2026-07-18 it succeeds with NO env vars set
 `The "middleware" file convention is deprecated. Please use "proxy" instead.`
 That warning is known and deliberate — do not "fix" it as a drive-by (see
 section 1 class (b)). The route list must still show `ƒ /api/watch/request-link`,
-`ƒ /watch/[token]`, and `ƒ Proxy (Middleware)`.
+`ƒ /watch/[token]`, and `ƒ Proxy (Middleware)`. Since 2026-09-13 it must also
+show `ƒ /api/watch/request-access`, `ƒ /api/shares/export` and
+`ƒ /api/analytics`. (`Proxy (Middleware)` registering matters more than it
+used to: middleware is now `async` and awaits a WebCrypto compare, so a
+failure to register would silently drop the entire admin auth boundary.)
+
+**Step 1b — unit suite (added 2026-09-13).**
+```bash
+npm test
+```
+83+ cases, no env vars, no network. Required for every class except (a)
+docs-only. If your diff touched a pure helper — `lib/gate.js`,
+`lib/shares.js`, `lib/settings.js`, `lib/bunny.js`, `lib/shareQuery.js`,
+`lib/csv.js`, `lib/safeCompare.js`, `lib/singleUse.js`, `lib/rateLimit.js` —
+ADD a case rather than only re-running the existing ones. Passing this is
+NOT evidence that a route works; see bunny-sharing-validation-and-qa's
+ladder (it is rung L0.5, below every live level).
 
 **Step 2 — gate crypto self-test** (required whenever lib/gate.js, GATE_SECRET
 handling, or pages/watch/[token].js grant logic changed; cheap enough to run
@@ -179,9 +200,22 @@ grep -rn "bunnyshare:" lib pages
 # `grep -rn "share:" lib pages | grep -v bunnyshare:` must print NOTHING
 # (no legacy bare `share:` keys may reappear)
 
-# Cookie name/path unchanged:
-grep -n "gate_" "pages/watch/[token].js"
-# EXPECT: return `gate_${token}`;  (and Set-Cookie uses Path=/watch/${token})
+# Cookie name/path unchanged. NOTE: this moved out of the page on
+# 2026-09-13 (roadmap item (r)) — the watch cookie is now built in
+# lib/watchAccess.js. The bundle cookie is still built in its page.
+grep -n "gate_\|Path=/watch" lib/watchAccess.js
+# EXPECT: cookieName() returning `gate_${token}`, and buildGateCookie()
+# producing `...; HttpOnly; Path=/watch/${token}; SameSite=Lax; Max-Age=...`
+grep -n "gate_bundle_\|Path=/bundle" lib/bundleAccess.js
+# EXPECT: bundleCookieName() and buildBundleCookie() (moved out of the page
+# on 2026-09-13 alongside the watch one)
+grep -rn "gate_\${token}" lib pages
+# EXPECT: ONLY lib/watchAccess.js — there must be exactly one definition of
+# the per-video cookie, which is what makes the bundle exchange provably
+# mint the same format the watch gate does
+# Stronger than either grep: tests/watchAccess.test.mjs asserts the exact
+# watch cookie string. If you change that string, that test fails — which is
+# the point. Do not "fix" it without reading non-negotiable 1.
 
 # SITE_URL fail-loud, no Host-header fallback (2026-07-22 fix):
 grep -n "SITE_URL is not set\|req.headers.host" lib/shares.js
@@ -191,10 +225,24 @@ grep -n "SITE_URL is not set\|req.headers.host" lib/shares.js
 # response (5 genericOk() call sites each, including the catch block):
 grep -cn "genericOk()" pages/api/watch/request-link.js pages/api/bundle/request-link.js
 
-# Uniform request-link responses — every outcome branch returns genericOk:
+# Uniform responses — every outcome branch returns genericOk. As of
+# 2026-09-13 there are THREE such endpoints and SIX return sites each
+# (the per-IP rate-limit branch was added to all of them):
 grep -n "genericOk" pages/api/watch/request-link.js
-# EXPECT: 1 definition + 5 return sites (missing/revoked/expired, email
-# mismatch, throttled, success, catch-block error)
+grep -n "genericOk" pages/api/bundle/request-link.js
+grep -n "genericOk" pages/api/watch/request-access.js
+# EXPECT each: 1 definition + 6 return sites (rate-limited, missing/revoked/
+# expired, email mismatch, throttled, success, catch-block error)
+
+# Single-use magic links: spent ONLY at the cookie-setting exchange
+grep -n "isGrantSpent\|markGrantSpent" "pages/watch/[token].js" "pages/bundle/[bundleId].js"
+# EXPECT: both functions in each file, inside the `if (query.grant)` branch
+# only. A spend on any other path is a bug (prefetcher DoS).
+
+# Constant-time admin compare, both halves always evaluated
+grep -n "timingSafeEqualStr" middleware.js
+# EXPECT: two calls inside a Promise.all — NOT behind `&&`, and NO bare
+# `u === user` anywhere
 
 # Fail-loud secret and constant-time compare still present:
 grep -n "GATE_SECRET\|timingSafeEqual" lib/gate.js
@@ -261,6 +309,18 @@ Rules:
   (public requires a matcher decision — see non-negotiable 7).
 - If the change alters recipient-visible behavior (/watch flow, emails), update
   the README "How it works" section.
+- Add/change a KV key namespace → update the architecture contract's
+  auxiliary-key table (section 5.1). The ephemeral namespaces today are
+  `gatethrottle:`, `bundlethrottle:`, `gateused:`, `gateip:`, `accessreq:`.
+- **Adopting something from the roadmap, or discovering something worth
+  remembering → update the SKILL FILES in the same change.** This is not
+  optional bookkeeping: these skills are what a zero-context session reads
+  as truth, and a skill that still calls a shipped feature "OPEN" will cause
+  it to be built twice. The 2026-09-13 batch shipped without this and left
+  four skills stale for a day — see failure-archaeology Episode 12. At
+  minimum: the roadmap item's outcome, the architecture contract's
+  weak-points row, failure-archaeology's open register, and
+  validation-and-qa's golden inventory.
 
 ## 6. When NOT to use this skill
 

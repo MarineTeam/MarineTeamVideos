@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { kvGet, kvSet } from "../../lib/kv";
 import { generateEmbedUrl } from "../../lib/bunny";
-import { signGrant, verifyGrant } from "../../lib/gate";
-import { getSettings, getVideoWatermark, resolveWatermark } from "../../lib/settings";
+import { isGrantSpent, markGrantSpent } from "../../lib/singleUse";
+import { recordGrantExchange } from "../../lib/gateLog";
+import { clientIp } from "../../lib/rateLimit";
+import { getSettings } from "../../lib/settings";
+import { decideWatchAccess } from "../../lib/watchAccess";
 import { isGeoAllowed, recipientGeoWhitelist } from "../../lib/geo";
 import { runWithMonitor, getMonitorSnapshot } from "../../lib/monitor";
 import QueryMonitorBar from "../../components/QueryMonitorBar";
@@ -18,6 +21,7 @@ export default function WatchPage({
   watermarkText,
   resumeSec,
   durationSec,
+  canRequestAccess,
   monitor,
 }) {
   if (status === "invalid") {
@@ -26,6 +30,7 @@ export default function WatchPage({
         <div className="recipient-card">
           <h2 style={{ marginTop: 0 }}>This link isn't available</h2>
           <p style={styles.muted}>{reason}</p>
+          {canRequestAccess && <RequestAccess token={token} />}
         </div>
         <QueryMonitorBar data={monitor} />
       </div>
@@ -53,6 +58,59 @@ export default function WatchPage({
     <>
       <EmailGate token={token} title={title} notice={notice} />
       <QueryMonitorBar data={monitor} />
+    </>
+  );
+}
+
+// Shown only under an EXPIRED link (never a revoked or unknown one — see
+// the getServerSideProps branch that sets canRequestAccess). Lets the
+// recipient ask the owner for more time instead of the page being a dead
+// end. The response is deliberately the same whatever happens server-side,
+// so this form can't be used to probe whose address a link belongs to.
+function RequestAccess({ token }) {
+  const [email, setEmail] = useState("");
+  const [state, setState] = useState("idle");
+
+  async function submit(e) {
+    e.preventDefault();
+    setState("sending");
+    try {
+      await fetch("/api/watch/request-access", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token, email }),
+      });
+    } catch {}
+    setState("sent");
+  }
+
+  if (state === "sent") {
+    return (
+      <p style={styles.muted}>
+        If that email matches this link, we've let the owner know. They can
+        extend it without changing the link you already have.
+      </p>
+    );
+  }
+
+  return (
+    <>
+      <p style={styles.muted}>Need more time? Ask the owner to extend it.</p>
+      <form onSubmit={submit} style={styles.form}>
+        <input
+          type="email"
+          required
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          placeholder="you@email.com"
+          className="input"
+          style={{ flex: "1 1 240px" }}
+          aria-label="Your email address"
+        />
+        <button type="submit" disabled={state === "sending"} className="btn btn-primary">
+          {state === "sending" ? "Sending..." : "Request more time"}
+        </button>
+      </form>
     </>
   );
 }
@@ -319,10 +377,6 @@ function EmailGate({ token, title, notice }) {
   );
 }
 
-function cookieName(token) {
-  return `gate_${token}`;
-}
-
 function parseCookies(header) {
   const out = {};
   (header || "").split(";").forEach((part) => {
@@ -349,112 +403,78 @@ export async function getServerSideProps(ctx) {
 async function watchProps({ params, query, req, res }) {
   const { token } = params;
   const record = await kvGet(`bunnyshare:${token}`);
-
-  if (!record) {
-    return { props: { status: "invalid", reason: "Link not found." } };
-  }
-  if (record.revoked) {
-    return { props: { status: "invalid", reason: "Access to this video has been revoked." } };
-  }
-  if (Date.now() > record.expiresAt) {
-    return { props: { status: "invalid", reason: "This link has expired." } };
-  }
-
   const settings = await getSettings();
-  if (settings.geoWhitelistEnabled && !isGeoAllowed(req, recipientGeoWhitelist())) {
-    return { props: { status: "invalid", reason: "This video isn't available in your region." } };
-  }
 
-  // 1. Fresh magic-link click: exchange the short-lived ?grant= for a scoped,
-  //    longer-lived cookie, then redirect to the clean URL so the one-time
-  //    grant doesn't linger in the address bar or browser history.
-  if (query.grant) {
-    const payload = verifyGrant(query.grant, { token });
-    if (payload) {
-      const cookieGrant = signGrant({
-        token,
-        email: record.email,
-        expiresAt: record.expiresAt,
-      });
-      const maxAge = Math.max(0, Math.floor((record.expiresAt - Date.now()) / 1000));
-      const proto =
-        req.headers["x-forwarded-proto"] ||
-        ((process.env.SITE_URL || "").startsWith("https") ? "https" : "http");
-      const secure = proto === "https" ? "; Secure" : "";
-      res.setHeader(
-        "Set-Cookie",
-        `${cookieName(token)}=${encodeURIComponent(cookieGrant)}; HttpOnly; Path=/watch/${token}; SameSite=Lax; Max-Age=${maxAge}${secure}`
-      );
-      return { redirect: { destination: `/watch/${token}`, permanent: false } };
-    }
-    // Grant present but invalid/expired — fall through to the email form with a note.
+  const proto =
+    req.headers["x-forwarded-proto"] ||
+    ((process.env.SITE_URL || "").startsWith("https") ? "https" : "http");
+
+  // Every branch of the access decision lives in lib/watchAccess.js so it can
+  // be tested without importing this JSX file (roadmap item (r)). This
+  // function only gathers facts and applies the effects the decision asks
+  // for — no branching logic of its own.
+  const decision = await decideWatchAccess({
+    token,
+    record,
+    settings,
+    grant: query.grant,
+    cookies: parseCookies(req.headers.cookie),
+    geoAllowed: !settings.geoWhitelistEnabled || isGeoAllowed(req, recipientGeoWhitelist()),
+    secure: proto === "https",
+    isSpent: isGrantSpent,
+  });
+
+  if (decision.kind === "invalid") {
     return {
       props: {
-        status: "need-email",
-        token,
-        title: record.videoTitle,
-        notice: "That sign-in link has expired. Enter your email to get a new one.",
+        status: "invalid",
+        reason: decision.reason,
+        ...(decision.canRequestAccess ? { token, canRequestAccess: true } : {}),
       },
     };
   }
 
-  // 2. Returning viewer with a valid cookie grant.
-  const cookies = parseCookies(req.headers.cookie);
-  const existing = verifyGrant(cookies[cookieName(token)], { token });
-  if (existing) {
-    // View tracking: additive fields only, so records created before this
-    // feature keep working untouched. Counted per authorized page render —
-    // never for the email form. Last-writer-wins on concurrent views is
-    // acceptable at this scale.
-    const now = Date.now();
-    await kvSet(`bunnyshare:${token}`, {
-      ...record,
-      viewCount: (record.viewCount || 0) + 1,
-      firstViewedAt: record.firstViewedAt || now,
-      lastViewedAt: now,
-    });
-
-    const embedUrl = generateEmbedUrl(record.videoId, 3600);
-
-    // Short-lived tracking grant for the playback-event reporter: the gate
-    // cookie is Path-scoped to this page and HttpOnly, so client JS can't
-    // present it to /api/watch/track. This grant is token-bound and capped
-    // at 6 h (or share expiry, whichever is sooner).
-    const trackAuth = signGrant({
-      token,
+  if (decision.kind === "exchange") {
+    // Spend the grant at the moment of the cookie-setting exchange, never on
+    // any other path (see lib/singleUse.js for why that placement matters).
+    await markGrantSpent(decision.spend.grant, decision.spend.expiresAt);
+    // Audit the moment access was actually granted (lib/gateLog.js).
+    // Best-effort by construction — it never throws — so it cannot turn a
+    // legitimate sign-in into a failure.
+    await recordGrantExchange({
+      kind: "watch",
+      token: token,
       email: record.email,
-      expiresAt: Math.min(record.expiresAt, Date.now() + 6 * 3600 * 1000),
+      ip: clientIp(req),
     });
+    res.setHeader("Set-Cookie", decision.setCookie);
+    return { redirect: { destination: decision.redirectTo, permanent: false } };
+  }
 
-    // Watermark decision (global default + per-share override + exemptions).
-    // Settings live in their own KV namespace; a deployment that never set
-    // them reads defaults (watermark off), so this is inert until enabled.
-    // (settings already fetched above for the geo check.)
-    const watermarkOn = resolveWatermark({
-      settings,
-      recipientEmail: record.email,
-      shareWatermark: record.watermark,
-      videoWatermark: getVideoWatermark(settings, record.videoId),
-    });
-
+  if (decision.kind === "authorized") {
+    await kvSet(`bunnyshare:${token}`, decision.viewUpdate);
     return {
       props: {
         status: "authorized",
-        embedUrl,
-        title: record.videoTitle,
+        embedUrl: generateEmbedUrl(decision.videoId, 3600),
+        title: decision.title,
         token,
-        trackAuth,
-        // The verified recipient email is what we stamp on the player.
-        watermarkText: watermarkOn ? record.email : null,
-        // Resume support: additive fields, absent (→ 0) on older records.
-        resumeSec: record.lastPositionSec || 0,
-        durationSec: record.durationSec || 0,
+        trackAuth: decision.trackAuth,
+        watermarkText: decision.watermarkText,
+        resumeSec: decision.resumeSec,
+        durationSec: decision.durationSec,
       },
     };
   }
 
-  // 3. No grant yet — ask for the email.
-  return { props: { status: "need-email", token, title: record.videoTitle } };
+  return {
+    props: {
+      status: "need-email",
+      token,
+      title: decision.title,
+      ...(decision.notice ? { notice: decision.notice } : {}),
+    },
+  };
 }
 
 const styles = {

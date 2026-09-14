@@ -70,6 +70,23 @@ title, email, expiry) plus a count of live `gatethrottle:*` keys (30-second
 magic-link throttle markers — a nonzero count means someone requested a
 sign-in link within the last 30 s).
 
+**Note (2026-09-13, `5eb7245`): this script predates three key namespaces
+and does not know about them.** It will not show `gateused:*` (single-use
+magic-link markers), `gateip:*` (per-IP rate-limit counters) or
+`accessreq:*` (access-request throttles), and its status column does not
+know about the `maxViews` cap, so a share that is "Used up" still prints as
+Active. Until the script is updated, inspect those directly:
+
+```bash
+# per-IP counter — the one that silently eats your test magic links
+curl -s -H "Authorization: Bearer $KV_REST_API_TOKEN" "$KV_REST_API_URL/get/gateip:<your-ip>"
+# clear it
+curl -s -H "Authorization: Bearer $KV_REST_API_TOKEN" "$KV_REST_API_URL/del/gateip:<your-ip>"
+```
+
+All three namespaces self-expire and every one fails OPEN, so deleting any
+of them degrades a protection temporarily but can never break a live link.
+
 Expected output without env (verified 2026-07-18):
 `MISSING ENV: KV_REST_API_URL, KV_REST_API_TOKEN. Source your .env.local and retry.` exit 2.
 

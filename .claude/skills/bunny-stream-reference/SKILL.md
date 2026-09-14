@@ -37,7 +37,7 @@ general Bunny textbook.
 ### (a) List videos — `listVideos()` (lib/bunny.js:6-30)
 
 ```
-GET https://video.bunnycdn.com/library/<BUNNY_LIBRARY_ID>/videos?itemsPerPage=100&orderBy=date
+GET https://video.bunnycdn.com/library/<BUNNY_LIBRARY_ID>/videos?page=<N>&itemsPerPage=100&orderBy=date
 Headers: AccessKey: <BUNNY_API_KEY>
          accept: application/json
 ```
@@ -47,10 +47,16 @@ Headers: AccessKey: <BUNNY_API_KEY>
 - Maps `data.items[]` to `{ id: guid, title, length, thumbnail }`.
 - `thumbnail` is a signed pull-zone URL only if `BUNNY_PULL_ZONE` is set;
   otherwise `null` (lib/bunny.js:26-28).
-- **Known limitation (as of 2026-07-18): `itemsPerPage=100` is a hard ceiling
-  — no pagination is implemented. A library with more than 100 videos will
-  silently show only the first page (newest first via `orderBy=date`).** If
-  a video "doesn't appear in the admin grid", check library size first.
+- **Pagination (fixed 2026-09-13, `5eb7245`).** Until then `itemsPerPage=100`
+  was a hard ceiling with no `page` param, so a library over 100 videos
+  silently showed only the first page (newest first via `orderBy=date`) and
+  video #101 could never be shared. `lib/bunny.js` now walks pages via a
+  shared `listAllPages()` helper — `page=N&itemsPerPage=100` — stopping on a
+  short/empty page OR once `totalItems` is reached, with a `MAX_PAGES=200`
+  hard stop against a malformed `totalItems`. A library at or under one page
+  still makes exactly ONE request. The same walker backs
+  `listCollections()`. Caveat: verified against a stubbed API that reports
+  `totalItems` honestly, never against a real 100+ library.
 
 ### (b) Embed URL signing — `generateEmbedUrl(videoId, expiresInSeconds)` (lib/bunny.js:56-65)
 
@@ -143,7 +149,7 @@ These are independent. Consequences:
 | Watch page renders, but the player iframe shows 403 inside | Embed token rejected: wrong `BUNNY_TOKEN_KEY` (e.g. CDN key pasted there), or embed `expires` passed | Verify with the section 4 embed one-liner; confirm key is the Library > API > Security one |
 | Admin grid loads, thumbnails all broken (img 403) | Pull-zone Token Authentication is enabled but `BUNNY_CDN_TOKEN_KEY` unset/wrong — or the hex encoding was used for a CDN token | Set the pull zone's own key; verify with the CDN one-liner |
 | Thumbnails 403 only after tab open > 1 h | Signed-URL expiry, not a config problem | Refresh (section 5) |
-| Video missing from admin grid, plays fine by direct GUID | > 100 videos in library; `itemsPerPage=100` ceiling (section 2a) | Known limitation as of 2026-07-18; pagination is a candidate change |
+| Video missing from admin grid, plays fine by direct GUID | Was the `itemsPerPage=100` ceiling (section 2a) | FIXED 2026-09-13 — pagination walks every page. If a video is still missing on a build at/after `5eb7245`, this is NOT the cause: check the Bunny API response itself (`grep -n "page=" lib/bunny.js` to confirm the walker is present), then the admin table's own status filter, which is a separate and newer way to not-see a row |
 
 For full incident triage flow (which experiment to run first, cross-surface
 symptoms), go to **bunny-sharing-debugging-playbook** — this section only

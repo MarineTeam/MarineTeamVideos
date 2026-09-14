@@ -6,8 +6,8 @@ description: >
   certification), the checkbox E2E procedures for single share, bulk share,
   the bundle listing page, expiry, anti-enumeration, and the middleware auth
   boundary, the
-  golden/certified inventory, and the candidate plan for adding automated
-  tests (none exist today). Load this when you need to know WHAT COUNTS AS
+  golden/certified inventory, and the automated `node --test` suite (added
+  2026-09-13) with what it does and does not cover. Load this when you need to know WHAT COUNTS AS
   PROOF that a change works, before claiming anything "works", or when adding
   tests. Do NOT load this to pick a probe for a live failure
   (bunny-sharing-debugging-playbook), to run the probes themselves
@@ -17,17 +17,25 @@ description: >
 
 # bunny-sharing validation and QA
 
-There is no test framework, no linter, and no CI in this repo (as of
-2026-07-18: `package.json` has only `dev`/`build`/`start` scripts; no
-`.github/` directory exists — two security-scanner workflows were tried and
-deleted, see bunny-sharing-failure-archaeology). Evidence is therefore
-explicit and manual. "It looks right" is never evidence.
+There IS an automated test suite as of 2026-09-13 (`5eb7245`): `npm test`
+runs 50 `node --test` cases. There is still **no linter and no CI** — two
+security-scanner workflows were tried and deleted (see
+bunny-sharing-failure-archaeology), and nothing runs the suite automatically
+on push, so running it is your job before every push.
+
+The suite is **unit-level only**. It covers pure functions and helpers; it
+does not touch a single API route, React component, or real service. So the
+manual evidence discipline below has NOT been superseded — it has gained one
+cheap rung underneath it. "It looks right" is still never evidence, and
+"50 tests pass" is not evidence that a route works.
 
 ## 1. The evidence ladder
 
 | Level | Evidence | Command / procedure | Proves |
 | --- | --- | --- | --- |
 | L0 | Production build passes | `npm run build` | Code compiles; routes register. Necessary, never sufficient. |
+| L0.5 | Unit suite passes | `npm test` | The pure helpers behave: gate crypto, single-use marking, per-IP counting, Bunny pagination, watermark resolution, email parsing, share filtering/paging, analytics rollup, CSV escaping. |
+| L1.5 | Route suite passes | `npm test` (the `tests/routes.*.test.mjs` files) | The API ROUTES behave against in-memory doubles for KV and Resend: uniform-response identity, per-IP enforcement actually stopping sends, access-request constraints, first-play notification firing exactly once, note/cap persistence and escaping, listing filters and paging, CSV export. Still no real service, and nothing inside a JSX page. |
 | L1 | Gate self-test 9/9 | `node .claude/skills/bunny-sharing-diagnostics/scripts/gate-selftest.mjs` | lib/gate.js crypto contract holds. No network needed. |
 | L2 | Targeted live probe | kv-inspect / bunny-probe / email-probe (bunny-sharing-diagnostics) with real creds | The specific integration (KV, Bunny, email) works against real services |
 | L3 | Manual E2E checklist (below) | Deployed or dev instance, real accounts | The user-visible flow works end to end |
@@ -38,9 +46,13 @@ bunny-sharing-change-control — that skill owns classification; this one owns
 what each level means):
 
 - Safe (docs/cosmetic): L0.
-- Behavior-affecting: L0 + the L2/L3 items covering the touched surface.
-- Compatibility-critical: L0 + L1 (if gate/token related) + the L3 backward-compat checks (old links still work).
-- Security-sensitive: L0 + L1 + the relevant L4/P2 adversarial predictions.
+- Behavior-affecting: L0 + L0.5 + the L2/L3 items covering the touched surface.
+- Compatibility-critical: L0 + L0.5 + L1 (if gate/token related) + the L3 backward-compat checks (old links still work).
+- Security-sensitive: L0 + L0.5 + L1 + the relevant L4/P2 adversarial predictions.
+
+L0.5 is now cheap enough to be non-negotiable: run it on every change, and
+if you touched a pure helper, ADD a case rather than only running the
+existing ones. It does not substitute for any higher level.
 
 ## 2. Manual E2E checklists
 
@@ -102,6 +114,31 @@ must be literally observed, not assumed.
 - [ ] Single-token `/api/revoke` still behaves unchanged after the refactor: 200 on success, 404 for an unknown token.
 - [ ] Middleware boundary: `/api/revoke-bulk` 401s without admin creds.
 
+### Single-use magic links (added 2026-09-13)
+- [ ] Complete the Single share flow above up to clicking the magic link; video plays.
+- [ ] Open the SAME magic-link URL again (browser history / paste it fresh).
+- [ ] It shows the email form with "That sign-in link has expired.", NOT the video.
+- [ ] Critically: it looks IDENTICAL to what a genuinely expired link shows — diff the two pages if unsure. A distinguishable "already used" message is a bug (it tells an interceptor the link was real).
+- [ ] The cookie from the first click still plays the video on reload — spending the grant must not log the legitimate viewer out.
+
+### View limit (added 2026-09-13)
+- [ ] Create a share with Max views = 1; complete the gate; video plays (view 1).
+- [ ] Reload → "This link has reached its view limit."
+- [ ] Admin table shows the row as "Used up" with `1× / 1`.
+- [ ] Extend that share by some hours → it stays "Used up". Correct: Extend moves expiry, not the count. The two limits are independent.
+- [ ] Click "+ Views" on that row, grant 2 → the row leaves "Used up" and reads `1× / 3`; the same link opens again with no new email and no new token.
+- [ ] Confirm the view count did NOT reset — it still reads 1 used, not 0.
+- [ ] Revoke a capped share, then try "+ Views" → refused, and the share stays revoked.
+- [ ] A share with NO cap set is unaffected: open it several times, status stays Active.
+
+### Access request on an expired link (added 2026-09-13)
+- [ ] Let a share expire (or create one with a very short window).
+- [ ] Open it → "This link has expired." AND a "Request more time" form.
+- [ ] Submit the MATCHING address → confirmation text; `ADMIN_NOTIFY_EMAIL` receives an access-request email naming the video and token.
+- [ ] Submit a NON-matching address on the same link → byte-identical confirmation text, and NO email arrives.
+- [ ] Submit again within the hour → identical response, no second email (per-share throttle).
+- [ ] REVOKE a share and open it → "revoked" message with NO request form (revocation is not appealable by design).
+
 ### Expiry
 - [ ] Create a share with hours = a small fraction (e.g. 0.02 ≈ 72 s — `hours` is multiplied by 3600·1000; verify the record's expiresAt via kv-inspect).
 - [ ] After expiry: `/watch/<token>` shows "This link has expired."; request-link on it returns the generic 200 but sends nothing.
@@ -138,25 +175,114 @@ As of 2026-07-18:
 | One-bundle-per-email consolidation (findOrExtendBundle, getBundleItems — both share.js and share-bulk.js) | CERTIFIED against mocks (L2/L3) | 2026-07-20 (same day, follow-up): two separate single-share calls to the same address consolidated into one email with a stable bundle link; cross-endpoint (bulk then single) consolidation confirmed; orphan sweep folded in a manually-injected pre-existing record; a revoked orphan was correctly excluded; an unrelated recipient was unaffected. NOT yet tried at scale (many bundles/shares) or against real Resend |
 | Expiry extend, incl. bulk + bundle propagation (extendOne, extendBundleForToken — /api/share/extend, /api/share/extend-bulk) | CERTIFIED against mocks (L2/L3) | 2026-07-21: extending a not-yet-expired share added exactly the requested hours to its OLD expiry; extending an already-expired share correctly extended from now, not the stale expiry; a revoked share was correctly rejected with expiresAt unchanged; bulk extend with a mix of valid/nonexistent/revoked tokens reported per-token results without failing the batch; extending one bundle member correctly re-maxed the bundle's own expiresAt. Middleware boundary re-checked (both routes 401 without admin creds). NOT yet tried at scale or in production |
 | Bulk revoke, incl. idempotency (revokeOne — /api/revoke-bulk) | CERTIFIED against mocks (L2/L3) | 2026-07-21: bulk-revoked 2 of 3 shares plus 1 nonexistent token in one call → both flipped, third untouched, bogus one reported a clean failure; re-revoking an already-revoked token succeeded (idempotent, not an error); single-token /api/revoke's behavior confirmed unchanged post-refactor. Middleware boundary re-checked (401 without admin creds). NOT yet tried at scale or in production |
+| createdAt-ordered share index (`bunnyshare-by-created`) | L0 + L0.5 + L1.5 | 12 cases: the unfiltered listing reads one page's worth of records (asserted by COUNTING store operations, not by reasoning), newest-first ordering across pages, filtered queries still correct and complete, both delete paths clearing both indexes, backfill seeding and being idempotent — and the three fallback routes (absent index, half-backfilled index, rejected commands) each still listing every share. NOT verified: the Upstash REST command shape, which the in-memory double assumes rather than proves |
+| Grant-exchange audit log (`lib/gateLog.js`, `/api/gate-log`) | L0 + L0.5 | 10 cases: no plaintext address anywhere in the store, same-millisecond entries both survive, newest-first ordering, limit clamping, expired entries swept from the index, a store failure not throwing, and the endpoint neither leaking addresses nor accepting non-GET. No live pass — "entries appear on each exchange" is unproven against a deployment |
+| Raising a view cap (`/api/share/allow-views`, +bulk) | L0 + L0.5 + L1.5 | 10 cases including the full round trip — a used-up share refused by `decideWatchAccess`, cap raised, SAME token passing the gate again — plus view-count preservation and both refusals. No live pass |
+| The 2026-09-13 batch (`5eb7245`), API-route half: per-IP limiting, access requests, first-play notification, notes, view-cap persistence, shares filtering/paging, CSV export, server-side analytics | L0 + L0.5 + L1.5 | Build clean, all routes registered, 83/83 tests. Routes exercised directly against in-memory KV + Resend doubles, including byte-identity across all six uniform branches on both public endpoints — the first time invariant 4 has been checked by anything other than a grep count. Still no real service and no deploy |
+| The WATCH page access decision: refusals, the single-use grant exchange and replay, `maxViews` at render, geo refusal, cookie shape, legacy-record compatibility | L0 + L0.5 | Extracted to `lib/watchAccess.js` on 2026-09-13 (roadmap item (r)) and covered by 19 cases in `tests/watchAccess.test.mjs`, including the replay being byte-identical to an invalid grant and a record carrying ONLY the original 2026-07 fields still gating/exchanging/playing. Still no live pass |
+| The BUNDLE page access decision: its grant exchange, the N per-video cookies it mints, and live member status | L0 + L0.5 | Extracted to `lib/bundleAccess.js` on 2026-09-13 and covered by 17 cases, including that each minted per-video cookie verifies on its own share and not a sibling, is byte-identical to what the watch gate mints, and that a dead member is skipped rather than breaking the exchange. Still no live pass |
+| Constant-time admin compare (`5eb7245`) | L0 + L0.5 | `tests/safeCompare.test.mjs` covers correctness. The TIMING property is argued from construction and has never been measured on Edge — do not claim it as verified |
 | Everything else live (real email delivery, gate E2E, bulk E2E, Bunny playback) | UNCERTIFIED | Never exercised against real services — bunny-sharing-email-gate-campaign is the path to certification |
 
 Update this table (via change-control) whenever a campaign phase or E2E
 checklist upgrades a surface.
 
-## 4. Adding automated tests — CANDIDATE plan (not current practice)
+## 4. The automated test suite — SHIPPED 2026-09-13 (`5eb7245`)
 
-Nothing here is doctrine; route the decision through
-bunny-sharing-change-control. Recommended shape, chosen to add zero
-dependencies (the repo observably avoids new deps, though that is a
-convention, not a stated rule): Node's built-in runner.
+`npm test` → `node --import ./tests/register.mjs --test tests/*.test.mjs`.
+Zero new dependencies (Node's built-in runner), matching the repo's
+observed convention of avoiding new deps.
 
-- First targets: `lib/gate.js` (pure crypto — port gate-selftest cases) and
-  `lib/shares.js` (mock kvSet via injection or test the record shape).
-- Sketch: add `"test": "node --test test/"` to package.json scripts; create
-  `test/gate.test.mjs` with `import { test } from "node:test"` +
-  `import assert from "node:assert"` wrapping the 9 self-test cases.
-- Keep gate-selftest.mjs even after — it runs without any test infrastructure
-  and is referenced by change-control's pre-push protocol.
+| File | Covers |
+| --- | --- |
+| `tests/gate.test.mjs` | Sign/verify round-trip, expiry, token binding, signature AND payload tampering, malformed input never throwing, bundle-vs-video token separation, `grantFingerprint` properties, `normalizeEmail` |
+| `tests/kvBacked.test.mjs` | Single-use marking and per-IP limiting against an in-memory stand-in for the Upstash REST API — spend-once, cross-grant isolation, TTL, raw grant never stored, per-IP cap and bucket isolation, and every fail-open path |
+| `tests/bunny.test.mjs` | Pagination against a stubbed Bunny API: 250 items in 3 requests, 42 in 1, no loop past an exactly-full page, collections, and that an API error throws rather than returning a short list |
+| `tests/settings.test.mjs` | The full watermark resolution order, including that an absent per-video key means inherit, not off |
+| `tests/shares.test.mjs` | `parseEmails` fan-out across every separator, dedupe, `normalizeNote`, and `baseUrl`'s `SITE_URL` fail-loud with no Host fallback |
+| `tests/shareQuery.test.mjs` | Status derivation (revoked beats expired; the `maxViews` exhausted case), filters, paging clamps, analytics rollup |
+| `tests/csv.test.mjs` | Quoting, escaping, and formula-injection neutralization |
+| `tests/helpers/harness.mjs` | The route harness: one `globalThis.fetch` router standing in for BOTH the Upstash REST API and the Resend HTTP API (both are plain fetch clients, so no module mocking and no new dependency), plus Next-style `req`/`res` doubles and a `fingerprint()` used to byte-compare uniform responses |
+| `tests/routes.gate.test.mjs` | `/api/watch/request-link`: all six outcome branches byte-identical, only a matching address sends, the per-share throttle, the per-IP cap stopping sends at 10/min with bucket isolation, and the minted grant's token-binding, TTL and SITE_URL-derived link |
+| `tests/routes.requestAccess.test.mjs` | `/api/watch/request-access`: expired-only and match-only sending, revoked never appealable, the hourly throttle, uniform responses across every branch, and that extra body fields (a `message`/`note`) never reach the admin's inbox |
+| `tests/routes.track.test.mjs` | `/api/watch/track`: first play notifies exactly once ever, the toggle gates it, a mailer failure never fails the call, counters cannot be inflated without a valid token-bound grant, revoked/expired shares reject, progress is monotonic |
+| `tests/routes.shares.test.mjs` | `/api/share` (note and cap persistence, absent-when-omitted, bad caps refused, HTML escaping, failed-send flagging), `/api/shares` (status filters incl. exhausted, search, paging and clamping, both totals), `/api/shares/export` (unpaged, filtered, formula neutralization, headers), `/api/analytics` (counts every share, not one page) |
+
+**The resolver hook.** The app's source uses extensionless relative imports
+(`from "./kv"`), which Next's bundler resolves and plain Node ESM does not.
+`tests/resolve-hook.mjs` (registered by `tests/register.mjs`) retries a
+failed relative resolution with `.js`. Nothing shipped depends on it. If
+anyone later adds `"type": "module"` or rewrites the imports, DELETE the
+hook rather than keeping two mechanisms.
+
+**What it deliberately does not cover.** The remaining blind spot is
+specific and worth stating exactly: **anything inside a JSX file.** Plain
+Node cannot parse JSX and this repo has no transform available (only
+`@swc/helpers`, a runtime shim, is installed). So these are untested:
+
+- every React component, including the Analytics panel whose near-miss is
+  recorded in failure-archaeology Episode 12, and the `Player` component's
+  postMessage tracking;
+- the thin glue left in each `getServerSideProps` — gathering facts and
+  applying effects. Both access DECISIONS were extracted on 2026-09-13
+  (`lib/watchAccess.js`, `lib/bundleAccess.js`) and are now tested.
+
+That was ALSO true of both access decisions until 2026-09-13, when roadmap
+item (r) extracted them into `lib/`. The remaining untested surface is
+presentational. If you find yourself putting a decision into a page, put it
+in `lib/` instead — that is the lesson item (r) bought.
+
+Next rung, in priority order:
+1. **Component-level tests**, which would need a JSX transform and therefore
+   a new dependency — weigh that against this repo's no-new-deps convention
+   before proposing it. The Analytics near-miss is the case for; the
+   dependency is the case against.
+2. **CI**, so any of this runs without being remembered. Note the history
+   before proposing a scanner specifically (failure-archaeology Episode 5).
+3. **A real-service pass** — the L2/L3/L4 rungs. Unchanged in priority by
+   any of the above; doubles are not services.
+
+**Two cautions learned building this suite (2026-09-13), both the same
+class: a test that was green for the wrong reason.** The rule they add up
+to: when a test claims to REJECT something, prove it rejects it. Assert the
+negative case explicitly, in the suite. A check you have not seen fail is a
+check you have not verified.
+
+*Caution two — substring checks are the wrong tool for host claims.* CodeQL
+raised two High "incomplete URL substring sanitization" alerts on the test
+asserting an emailed magic link points at `SITE_URL`. Test scope, so nothing
+in production depended on them — but the assertion really was weak:
+`body.includes("https://videos.test/watch/")` passes for a body containing
+`https://evil.example.com/x?next=https://videos.test/watch/abc`, the exact
+host-header-poisoning shape the test guards against. Now every absolute URL
+in the body is extracted and its PARSED host asserted, with a companion test
+proving the parsed check discriminates — a host laundered through a query
+parameter, several links in one body, and a suffix lookalike.
+
+A follow-up alert fired on that companion test, because its first version
+also asserted the OLD substring form passes the poisoned body. That one was
+a true false positive — the rule cannot tell a demonstration from a use —
+but the line deserved deleting anyway: it compared two string literals, so
+it could never fail and tested no project code. **A test that cannot fail is
+not a test.** Do not reintroduce a literal demonstration of a weak pattern
+to make a point; put the point in a comment and spend the assertion on
+something that runs project code.
+Take a scanner finding as a prompt to re-read your own assertion, not as a
+verdict to accept or dismiss — Episode 11's ReDoS alert was correctly
+dismissed after a benchmark; this one was correctly acted on after a read.
+
+*Caution one —* One crypto test
+passed for the wrong reason: it "tampered" with a signature by flipping its
+last base64url character. A 32-byte HMAC encodes to 43 characters whose last
+carries only 4 significant bits, so several distinct final characters decode
+to identical bytes — the tamper was frequently a no-op, and the test failed
+only when a run happened to produce a signature ending in `A`. It was caught
+by running the whole suite rather than the one file. Tamper at the BYTE
+level (decode, flip, re-encode) and assert the bytes actually changed; a
+green crypto test proves nothing if the mutation it applies is not real.
+
+Keep `gate-selftest.mjs` regardless — it runs with no test infrastructure at
+all and is referenced by change-control's pre-push protocol.
 
 ## 5. Acceptance discipline
 
@@ -180,9 +306,13 @@ Verified 2026-07-18 on branch claude/bulk-share-separate-links-auth-cblrle;
 email-failure and bundle sections added 2026-07-20, expiry-extend and
 bulk-revoke sections added 2026-07-21 — all verified live against a mock KV
 + mock SMTP (not real Resend/Upstash — see the golden inventory table's
-caveats for each).
+caveats for each). Updated 2026-09-13 for `5eb7245`: the no-tests premise
+was false as of that commit, the ladder gained L0.5, section 4 became a
+record of what shipped plus a ranked next rung, and the batch was added to
+the golden inventory at L0+L0.5 ONLY.
 
-- Still no tests/CI: `cat package.json | grep -A4 scripts; ls .github 2>&1` (expect no test script; No such file).
+- Tests present, CI still absent: `npm test` (expect 152+ passing);
+  `ls .github 2>&1` (expect: No such file).
 - Generic message string: `grep -n "sign-in link to it" pages/api/watch/request-link.js`.
 - 401 boundary: `grep -n "matcher" middleware.js` (expect `/api/((?!watch/|bundle/).*)`).
 - Hours→ms math: `grep -n "3600 \* 1000" lib/shares.js`.

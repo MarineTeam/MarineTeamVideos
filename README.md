@@ -15,9 +15,13 @@ See [FEATURES.md](./FEATURES.md) for the full feature list and [CHANGELOG.md](./
 - Views are tracked per link (count + last viewed), and real playback is tracked via the Bunny player's events (plays, furthest progress %, completed) so you can see who actually watched — not just who opened the page. A collapsible **Analytics** panel rolls this up per video (shares, distinct recipients, views, started, completed + completion rate, average progress).
 - You can optionally **watermark** the recipient's verified email across the player to deter and attribute leaks. It's controlled in layers — exempt emails/domains that are never watermarked (e.g. internal admins), a per-share Always/Never override (Share forms), a per-video Always/Never override (select on each Videos row), and a global default (admin **Settings** panel) — resolved most-specific-first as exemption → per-share → per-video → global default. It's a client-side overlay for attribution, not burned into the video, so it's a deterrent, not DRM.
 - Returning recipients get a **Resume from where they left off** prompt (or Start over); the player reports a throttled position while watching and the watch page seeks to it on request.
-- The `/watch/[token]` page is public (not behind Basic Auth) so recipients can open it directly. It's **email-gated**: the recipient must enter the address the link was shared with, and only if it matches does the app email them a one-time "magic link". Clicking that link sets a signed, link-scoped cookie and plays the video. Possessing the share URL alone is not enough — you also have to control the inbox it was sent to. Links that are revoked or expired never render.
+- The `/watch/[token]` page is public (not behind Basic Auth) so recipients can open it directly. It's **email-gated**: the recipient must enter the address the link was shared with, and only if it matches does the app email them a one-time "magic link". Clicking that link sets a signed, link-scoped cookie and plays the video. Possessing the share URL alone is not enough — you also have to control the inbox it was sent to. Links that are revoked or expired never render. The magic link is **single-use**: once it has been exchanged for a cookie it stops working, so an intercepted or forwarded sign-in link can't be replayed within its 15-minute window. A replayed link is indistinguishable from an expired one — it just shows the "request a new one" form.
+- Requesting a magic link is rate limited **per share and per IP**, so neither one recipient's inbox nor a spray across many links can be used to send mail in volume. Over-limit requests get exactly the same response as every other outcome.
+- A share can optionally carry a **view limit** and a **note**. The limit is enforced next to revoke/expiry — once it's used up the link stops rendering, and the admin table shows it as "Used up". The note is a short message from you that opens the notification email; it's escaped everywhere it's rendered.
+- When a link **expires**, the recipient isn't at a dead end: they can enter their address to ask you for more time, which emails `ADMIN_NOTIFY_EMAIL`. You then use Extend, and their original link keeps working. This is offered for expired links only — never for one you deliberately revoked — and the response is uniform whatever happens, so it can't be used to probe who a link belongs to.
+- Optionally, get an email the **first time a recipient actually plays** a share (Settings → Notifications). At most one per share, ever.
 - An optional **geo location whitelist** can further restrict every `/watch` and `/bundle` page, checked before the email gate, and the **admin page itself** can be geo-restricted too, on top of its credentials. Both country lists are set via env vars (`GEO_WHITELIST` / `ADMIN_GEO_WHITELIST`), not the admin UI — the Settings panel only has an ON/OFF toggle for each (off by default) and a read-only display of what's configured, so a lockout is always recoverable from your hosting dashboard rather than trapped behind the page it protects. Both fail open (never block) off Vercel or in local dev, since detection relies on Vercel's edge network. `ADMIN_GEO_BYPASS_EMAILS` lists Basic Auth usernames that always skip the admin geo check — a standing exemption meant to be armed before traveling, not an in-the-moment fix.
-- The admin table supports **Resend, Extend, and Revoke** per link, each also available as a bulk action across multiple selected links at once. Extending a share gives a recipient more time without changing their link; resend re-sends the notification on demand (not just after a delivery failure); revoke is idempotent and never deletes the record — just flips a flag. A revoked link also shows a **Restore** button that flips the flag back (same token/URL/cookie), kept as its own explicit action rather than folded into Extend, and a **Delete permanently** button that removes the record outright (same deletion `/api/cleanup` does in bulk, on demand for one link) — only available once a share is already revoked, so it's always a deliberate second step, not a shortcut around Revoke. Any share that belongs to a bundle also shows a persistent link to its bundle page right in the table, not just in the one-time toast shown after sharing.
+- The admin table is **searchable, filterable by status, and paged server-side**, so it stays usable as shares accumulate, and the current view can be exported as **CSV** (including the per-share tracking columns). The admin table supports **Resend, Extend, and Revoke** per link, each also available as a bulk action across multiple selected links at once. Extending a share gives a recipient more time without changing their link; resend re-sends the notification on demand (not just after a delivery failure); revoke is idempotent and never deletes the record — just flips a flag. A revoked link also shows a **Restore** button that flips the flag back (same token/URL/cookie), kept as its own explicit action rather than folded into Extend, and a **Delete permanently** button that removes the record outright (same deletion `/api/cleanup` does in bulk, on demand for one link) — only available once a share is already revoked, so it's always a deliberate second step, not a shortcut around Revoke. Any share that belongs to a bundle also shows a persistent link to its bundle page right in the table, not just in the one-time toast shown after sharing.
 - Share records (token, video, recipient, expiry, revoked flag) are stored in Upstash Redis via the REST API.
 - Expired/revoked shares can be purged with a cleanup endpoint, suitable for a scheduled job.
 
@@ -45,6 +49,46 @@ See [FEATURES.md](./FEATURES.md) for the full feature list and [CHANGELOG.md](./
 
 4. Open [http://localhost:3000](http://localhost:3000) and sign in with `ADMIN_USER` / `ADMIN_PASS`.
 
+## Tests
+
+```bash
+npm test
+```
+
+Runs the `node --test` suite in `tests/` — 83 cases, no env vars, no
+network, no KV or mail provider needed.
+
+**Unit tests** cover the gate's signing and verification properties
+(round-trip, expiry, token binding, byte-level tamper rejection, malformed
+input), single-use grant marking, per-IP rate limiting, Bunny list
+pagination, watermark resolution order, recipient-email parsing, share
+status/filtering/paging, and CSV formula-injection escaping.
+
+**Route tests** (`tests/routes.*.test.mjs`) exercise the API routes
+themselves against in-memory stand-ins for the two services they talk to,
+driven by a single `fetch` stub. They check that every outcome of the public
+sign-in endpoints is byte-identical, that the per-IP cap actually stops
+emails going out, that an access request only ever fires for an expired link
+with a matching address, that the first-play notification fires exactly once
+per share, and that notes, view caps, filters, paging and the CSV export
+behave.
+
+The suite loads the app's real modules through a small test-only resolver
+hook (`tests/register.mjs`), because the source uses extensionless imports
+that Next resolves and plain Node does not.
+
+**Access-decision tests** cover both entrances to the gate — the watch page
+and the bundle listing page — including every refusal reason, the exact
+cookie each mints, that a replayed sign-in link is refused and looks
+identical to an expired one, and that a record carrying only the original
+field set still works.
+
+One honest limit: nothing here touches a real service, so the live email
+path and Bunny playback are still unproven. What is untested in the code is
+presentational — React components and the player's event tracking — because
+importing JSX would need a build dependency this project does without. See
+`.claude/skills/` for the end-to-end procedures that cover the live gap.
+
 ## Environment variables
 
 | Variable | Description |
@@ -59,6 +103,7 @@ See [FEATURES.md](./FEATURES.md) for the full feature list and [CHANGELOG.md](./
 | `GEO_WHITELIST` | Optional comma/space-separated ISO country codes (e.g. `US, CA`) allowed to reach `/watch` and `/bundle` pages. Also requires enabling it in the Settings panel (off by default). Deliberately an env var, not a Settings field, so the list can't be mistyped and saved instantly. |
 | `ADMIN_GEO_WHITELIST` | Same idea, for the admin page/API, on top of the credentials above. Also requires enabling it in the Settings panel (off by default). An env var for the same reason, plus: it must stay editable outside the app so a lockout is always fixable from your hosting dashboard, not locked behind the very page it protects. |
 | `ADMIN_GEO_BYPASS_EMAILS` | Optional comma/space-separated Basic Auth usernames (case-insensitive) that always skip the admin geo check above, regardless of country or the toggle. Arm this before traveling — it's a standing safety net, not an in-the-moment fix, since env var changes need a redeploy. |
+| `ADMIN_NOTIFY_EMAIL` | Optional. Where admin notifications go — the "first play" email (when enabled in Settings) and access requests from expired links. Falls back to your configured from-address (`RESEND_FROM`/`SMTP_FROM`/`SMTP_USER`) when unset; with no from-address either, those notifications are simply skipped. |
 | `GATE_SECRET` | Long random secret used to sign the email-gate magic links and viewer cookies (e.g. `openssl rand -hex 32`). Required for `/watch` pages. |
 | `RESEND_API_KEY` / `RESEND_FROM` | Preferred email delivery: when `RESEND_API_KEY` is set, emails are sent via the [Resend](https://resend.com/) HTTP API. `RESEND_FROM` is a verified sender on your Resend domain. |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | Fallback SMTP settings, used only when `RESEND_API_KEY` is not set. Works with any SMTP provider (Brevo, SMTP2GO, Gmail app password, etc.). |
@@ -76,7 +121,10 @@ See [FEATURES.md](./FEATURES.md) for the full feature list and [CHANGELOG.md](./
 | `/api/video-invite/remove` | POST | Remove one email from a video's invite list (`{videoId, email}`) and revoke their underlying share immediately. Re-adding the same email later is treated as a brand new invite |
 | `/api/groups` | GET / POST | List named viewer groups, or create one (`{name, emails}`) |
 | `/api/groups/[groupId]` | GET / PUT / DELETE | Read, update (`{name?, emails?}`), or delete one viewer group |
-| `/api/shares` | GET | List all share records (for the admin table) |
+| `/api/shares` | GET | List share records for the admin table. Optional `status` (`active`/`expired`/`exhausted`/`revoked`/`failed`), `q` (substring of recipient email or video title), `page` and `pageSize` (default 50, max 500) filter and page the results server-side; the response carries `total`, `page`, `pageCount` and `totalAll` alongside `shares` |
+| `/api/shares/export` | GET | CSV export of the shares table plus per-share tracking. Honours the same `status` and `q` filters as `/api/shares` but is never paginated. Cells that would otherwise be read as spreadsheet formulas are prefixed as text |
+| `/api/gate-log` | GET | Recent grant exchanges, newest first (`?limit=`), for incident forensics: when someone passed the email gate, on which share, and from which IP. Recipient emails appear only as a fingerprint — match one against a share record to identify it |
+| `/api/analytics` | GET | Per-video rollup (shares, distinct recipients, views, started, completed + rate, average progress), computed server-side over **every** share — not the page currently shown in the admin table |
 | `/api/settings` | GET / POST | Read or update global admin settings (watermark default + exempt emails/domains), stored in the `bunnysettings:global` KV record |
 | `/api/video-watermark` | POST | Set or clear one video's watermark override (`{videoId, choice}` where choice is `on`/`off`/`default`), stored in the same settings record |
 | `/api/revoke` | POST | Revoke a share by token. Idempotent. |
@@ -87,9 +135,12 @@ See [FEATURES.md](./FEATURES.md) for the full feature list and [CHANGELOG.md](./
 | `/api/share/resend-bulk` | POST | Resend for multiple shares in one call; reports success/failure per token |
 | `/api/share/extend` | POST | Extend a share's expiry in place (`{token, hours}`) — same link, longer validity. Works on an already-expired (not revoked) share. Refuses revoked shares. |
 | `/api/share/extend-bulk` | POST | Extend multiple shares in one call; reports success/failure per token |
+| `/api/share/allow-views` | POST | Raise a share's view limit in place (`{token, views}`) — same link, more views. Raises the cap and never resets the view count, so the record of how often it was actually opened survives. Refuses a revoked share (so it can't double as Restore) and an uncapped one (imposing a limit is a separate, deliberate action) |
+| `/api/share/allow-views-bulk` | POST | Raise the view limit on multiple shares in one call; reports success/failure per token |
 | `/api/cleanup` | POST | Delete expired or revoked share records, and bundle records that are either expired or have no live members left |
-| `/api/backfill-index` | POST | One-time migration: populates the share/bundle index sets from a full scan, for records that existed before the index did. Idempotent — safe to re-run. Also in the admin UI as "🔁 Rebuild index". |
+| `/api/backfill-index` | POST | One-time migration: populates the share/bundle index sets **and the createdAt-ordered share index** from a full scan, for records that existed before those indexes did. Idempotent — safe to re-run. Also in the admin UI as "🔁 Rebuild index". Run it once after upgrading; until you do, everything still works, the unfiltered shares listing just keeps its old read cost |
 | `/api/watch/request-link` | POST | Public: verify a recipient's email against a share and email them a one-time magic link (excluded from admin Basic Auth) |
+| `/api/watch/request-access` | POST | Public: lets the recipient of an **expired** link ask the owner for more time, emailing `ADMIN_NOTIFY_EMAIL`. Carries no free-text message, only sends when the typed address matches the record, never acts on a revoked share, and answers with the same uniform 200 in every case (excluded from admin Basic Auth) |
 | `/api/watch/track` | POST | Public: record playback events (play/progress/ended) reported by the player; requires a token-bound tracking grant issued by the authorized watch page |
 | `/api/bundle/request-link` | POST | Public: verify a recipient's email against their bundle and email them a one-time magic link that unlocks every video in it |
 | `/api/monitor-status` | GET | Reports whether `QUERY_MONITOR` is on, for the admin page's badge |

@@ -1,6 +1,9 @@
 import { useState } from "react";
 import { kvGet } from "../../lib/kv";
-import { signGrant, verifyGrant } from "../../lib/gate";
+import { isGrantSpent, markGrantSpent } from "../../lib/singleUse";
+import { recordGrantExchange } from "../../lib/gateLog";
+import { clientIp } from "../../lib/rateLimit";
+import { decideBundleAccess } from "../../lib/bundleAccess";
 import { getBundleMembers } from "../../lib/bundles";
 import { getSettings } from "../../lib/settings";
 import { isGeoAllowed, recipientGeoWhitelist } from "../../lib/geo";
@@ -125,14 +128,6 @@ function BundleEmailGate({ bundleId, notice }) {
   );
 }
 
-function bundleCookieName(bundleId) {
-  return `gate_bundle_${bundleId}`;
-}
-
-function videoCookieName(token) {
-  return `gate_${token}`;
-}
-
 function parseCookies(header) {
   const out = {};
   (header || "").split(";").forEach((part) => {
@@ -159,83 +154,58 @@ export async function getServerSideProps(ctx) {
 async function bundleProps({ params, query, req, res }) {
   const { bundleId } = params;
   const bundle = await kvGet(`bunnybundle:${bundleId}`);
-
-  if (!bundle) {
-    return { props: { status: "invalid", reason: "Link not found." } };
-  }
-  if (Date.now() > bundle.expiresAt) {
-    return { props: { status: "invalid", reason: "This link has expired." } };
-  }
-
   const settings = await getSettings();
-  if (settings.geoWhitelistEnabled && !isGeoAllowed(req, recipientGeoWhitelist())) {
-    return { props: { status: "invalid", reason: "This page isn't available in your region." } };
+
+  const proto =
+    req.headers["x-forwarded-proto"] ||
+    ((process.env.SITE_URL || "").startsWith("https") ? "https" : "http");
+
+  // Every branch lives in lib/bundleAccess.js so it can be tested without
+  // importing this JSX file (roadmap item (r)). This function only gathers
+  // facts and applies the effects the decision asks for. `loadMembers` is
+  // injected rather than called up front so the member records are still
+  // only read on the paths that actually need them.
+  const decision = await decideBundleAccess({
+    bundleId,
+    bundle,
+    grant: query.grant,
+    cookies: parseCookies(req.headers.cookie),
+    geoAllowed: !settings.geoWhitelistEnabled || isGeoAllowed(req, recipientGeoWhitelist()),
+    secure: proto === "https",
+    isSpent: isGrantSpent,
+    loadMembers: () => getBundleMembers(bundle.tokens),
+  });
+
+  if (decision.kind === "invalid") {
+    return { props: { status: "invalid", reason: decision.reason } };
   }
 
-  const bundleToken = `bundle:${bundleId}`;
-
-  // 1. Fresh magic-link click: exchange the short-lived ?grant= for a
-  //    bundle-listing cookie AND a per-video cookie for every member — one
-  //    verification unlocks the whole bundle, which is the point of it. Each
-  //    video still independently re-checks revoked/expired on every render
-  //    (pages/watch/[token].js); this cookie only saves the email round-trip,
-  //    it never bypasses that check.
-  if (query.grant) {
-    const payload = verifyGrant(query.grant, { token: bundleToken });
-    if (payload) {
-      const members = await getBundleMembers(bundle.tokens);
-      const proto =
-        req.headers["x-forwarded-proto"] ||
-        ((process.env.SITE_URL || "").startsWith("https") ? "https" : "http");
-      const secure = proto === "https" ? "; Secure" : "";
-
-      const cookies = [];
-
-      const bundleGrant = signGrant({ token: bundleToken, email: bundle.email, expiresAt: bundle.expiresAt });
-      const bundleMaxAge = Math.max(0, Math.floor((bundle.expiresAt - Date.now()) / 1000));
-      cookies.push(
-        `${bundleCookieName(bundleId)}=${encodeURIComponent(bundleGrant)}; HttpOnly; Path=/bundle/${bundleId}; SameSite=Lax; Max-Age=${bundleMaxAge}${secure}`
-      );
-
-      for (const { token, record } of members) {
-        if (!record) continue;
-        const videoGrant = signGrant({ token, email: record.email, expiresAt: record.expiresAt });
-        const maxAge = Math.max(0, Math.floor((record.expiresAt - Date.now()) / 1000));
-        cookies.push(
-          `${videoCookieName(token)}=${encodeURIComponent(videoGrant)}; HttpOnly; Path=/watch/${token}; SameSite=Lax; Max-Age=${maxAge}${secure}`
-        );
-      }
-
-      res.setHeader("Set-Cookie", cookies);
-      return { redirect: { destination: `/bundle/${bundleId}`, permanent: false } };
-    }
-    return {
-      props: {
-        status: "need-email",
-        bundleId,
-        notice: "That sign-in link has expired. Enter your email to get a new one.",
-      },
-    };
+  if (decision.kind === "exchange") {
+    await markGrantSpent(decision.spend.grant, decision.spend.expiresAt);
+    // Audit the moment access was actually granted (lib/gateLog.js).
+    // Best-effort by construction — it never throws — so it cannot turn a
+    // legitimate sign-in into a failure.
+    await recordGrantExchange({
+      kind: "bundle",
+      token: `bundle:${bundleId}`,
+      email: bundle.email,
+      ip: clientIp(req),
+    });
+    res.setHeader("Set-Cookie", decision.setCookies);
+    return { redirect: { destination: decision.redirectTo, permanent: false } };
   }
 
-  // 2. Returning viewer with a valid bundle cookie.
-  const cookies = parseCookies(req.headers.cookie);
-  const existing = verifyGrant(cookies[bundleCookieName(bundleId)], { token: bundleToken });
-  if (existing) {
-    const members = await getBundleMembers(bundle.tokens);
-    const items = members
-      .filter(({ record }) => record)
-      .map(({ token, record }) => ({
-        token,
-        videoTitle: record.videoTitle,
-        link: `/watch/${token}`,
-        status: record.revoked ? "revoked" : Date.now() > record.expiresAt ? "expired" : "active",
-      }));
-    return { props: { status: "authorized", bundleId, items } };
+  if (decision.kind === "authorized") {
+    return { props: { status: "authorized", bundleId, items: decision.items } };
   }
 
-  // 3. No grant yet — ask for the email.
-  return { props: { status: "need-email", bundleId } };
+  return {
+    props: {
+      status: "need-email",
+      bundleId,
+      ...(decision.notice ? { notice: decision.notice } : {}),
+    },
+  };
 }
 
 const styles = {

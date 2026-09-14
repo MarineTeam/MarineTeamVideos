@@ -374,10 +374,12 @@ each is owned by a sibling skill.
 | Item | Detail | Status | Owner skill |
 |---|---|---|---|
 | Gate unproven live | The email gate (Episode 7) has never been exercised against live Resend + a real inbox + prod Bunny/KV. It is built, not proven. | OPEN — the hardest live problem | bunny-sharing-email-gate-campaign |
-| Magic-link grant not single-use | A grant is replayable within its 15-min TTL if intercepted (mitigated: cookie exchange + redirect strips it from the URL). | OPEN / hardening CANDIDATE | bunny-sharing-email-gate-campaign (hardening menu), bunny-sharing-roadmap |
-| No per-IP rate limiting | Throttle on request-link is per-share-token only (30 s); nothing limits one IP hammering many tokens. | OPEN | bunny-sharing-roadmap |
+| ~~Magic-link grant not single-use~~ | Built 2026-09-13 (`5eb7245`) — `lib/singleUse.js` marks a grant spent by SHA-256 fingerprint at the cookie exchange, TTL = its own remaining life. NOT live-certified; see Episode 12. | BUILT, not proven live | bunny-sharing-email-gate-campaign (hardening menu), bunny-sharing-roadmap (c) |
+| ~~No per-IP rate limiting~~ | Built 2026-09-13 (`5eb7245`) — `lib/rateLimit.js`, checked before any record lookup on both public request-link endpoints, over-limit returns the same `genericOk()`. NOT live-certified; see Episode 12. | BUILT, not proven live | bunny-sharing-roadmap (b) |
 | ~~KV `KEYS` is O(N)~~ | Fixed 2026-07-22 — index sets + SMEMBERS replace every hot-path KEYS scan; see roadmap item (a). | SETTLED | bunny-sharing-roadmap |
-| Plaintext Basic Auth compare | middleware.js compares `ADMIN_USER`/`ADMIN_PASS` env strings directly; single shared credential; no timing-safe compare. | OPEN | bunny-sharing-roadmap |
+| Plaintext Basic Auth compare | PARTLY closed 2026-09-13 (`5eb7245`): the compare is now constant-time (`lib/safeCompare.js`, WebCrypto double-HMAC — Edge has no `node:crypto` `timingSafeEqual`). Still a SINGLE SHARED credential with no lockout and no named users. | PARTLY SETTLED — shared-credential half still OPEN | bunny-sharing-roadmap (d) |
+| ~~Bunny list ceiling~~ | Was never in this register but was live in the code: `itemsPerPage=100` with no `page` param meant video #101+ was invisible and unshareable. Fixed 2026-09-13 (`5eb7245`). | SETTLED | bunny-sharing-roadmap (e) |
+| No automated tests | Was true until 2026-09-13 (`5eb7245`), which added a 50-case `node --test` suite. Still no linter and no CI, and the suite is unit-level only — no route-level or live coverage. | PARTLY SETTLED | bunny-sharing-validation-and-qa |
 | Record stored before email sent | share/share-bulk write the KV record, then email; a send failure leaves a live record with no delivered link. | OPEN | bunny-sharing-roadmap |
 
 ---
@@ -457,6 +459,155 @@ dismissible). Two lessons:
 
 ---
 
+## Episode 12 — The 2026-09-13 batch: three long-open items closed at once, and a near-miss
+
+**Trigger.** A session was asked to suggest features, then to build all of
+them. Twelve changes landed in one commit, `5eb7245`. Three of them closed
+items that had sat in Episode 10's register since it was written.
+
+**What closed.**
+- Single-use magic links (`lib/singleUse.js`) — hardening menu item 1.
+- Per-IP rate limiting (`lib/rateLimit.js`) — hardening menu item 2.
+- Constant-time admin compare (`lib/safeCompare.js`) — roadmap item (d),
+  first step only.
+- Bunny list pagination (`lib/bunny.js`) — roadmap item (e). This one was a
+  live bug, not a hardening candidate: a library over 100 videos silently
+  lost everything past the first page.
+- First automated tests (`tests/`, 50 cases) — roadmap item (g).
+
+**The near-miss, which is the part worth remembering.** The same batch made
+the admin shares table server-side paged. `computeAnalytics` lived in
+`pages/index.js` and was called as `computeAnalytics(shares)` — where
+`shares` had, until that moment, always been *every* share. After paging it
+would have been one page of 50. The Analytics panel would have kept
+rendering, with plausible-looking numbers, silently describing only the
+latest 50 shares. Nothing would have errored and no test would have caught
+it, because no test covered the panel.
+
+It was caught by re-reading the diff adversarially before pushing, not by
+the build, the tests, or the invariant greps. The fix was to move the rollup
+server-side (`computeAnalytics` in `lib/shareQuery.js`, exposed at
+`/api/analytics`) so it reads every record by construction.
+
+**Lesson, generalized:** when a data source that used to be complete becomes
+paged, filtered, or capped, every *derived* consumer of it silently changes
+meaning without changing shape. Grep for every reader of the collection you
+just narrowed. In this codebase that means: anything reading the `shares`
+array in `pages/index.js`, and anything reading `bundle.tokens` or an index
+set. A rollup that keeps rendering is not evidence that it is still correct.
+
+**Evidence shape — read this before trusting the batch.** This batch was
+verified differently from Episodes (f) through (j) in the roadmap, and less
+thoroughly in one specific way:
+
+| Check | This batch | Earlier adopted items (f)-(j) |
+|---|---|---|
+| `npm run build` clean | yes | yes |
+| Invariant greps | yes | yes |
+| Automated unit tests | yes (new; 50 cases) | none existed |
+| Route-level pass against mock KV + mock SMTP | **no** | yes |
+| Live Resend / Bunny / prod KV | no | no |
+
+So: the helper functions are better covered than anything before them, and
+the API routes that use those helpers are *less* covered than the routes
+added in July, which were exercised end-to-end against throwaway mock
+servers. Specifically unexercised at route level: the single-use exchange
+inside `pages/watch/[token].js` and `pages/bundle/[bundleId].js`, the per-IP
+branch in both request-link handlers, the first-play notification in
+`/api/watch/track`, and the whole `/api/watch/request-access` flow. Do not
+read "50 tests passing" as "this batch is proven".
+
+**Addendum, same day — route tests, and a test that passed for the wrong
+reason.** The evidence-shape table above was closed out within hours by
+adding a route-level harness (`tests/helpers/harness.mjs`): one
+`globalThis.fetch` router standing in for BOTH the Upstash REST API and the
+Resend HTTP API, since both are plain fetch clients. That took the suite
+from 50 to 83 cases and covered every API route in the batch. Invariant 4
+(uniform responses) is now checked by byte-comparing the branches rather
+than by counting `genericOk()` greps — the first time that has ever been
+true.
+
+Two things were learned doing it, both worth keeping:
+
+1. **A crypto test can be green and worthless.** The existing "rejects a
+   tampered signature" case tampered by flipping the LAST base64url
+   character of the signature. A 32-byte HMAC encodes to 43 characters, the
+   last carrying only 4 significant bits, so several distinct final
+   characters decode to the *same bytes* — the tamper was frequently not a
+   tamper, and `verifyGrant` correctly accepted an untampered signature. It
+   failed only on runs where the signature happened to end in `A`, which is
+   why it passed when run alone and failed in the full suite. Fixed by
+   tampering at the byte level (decode, XOR a byte, re-encode) with an
+   assertion that the bytes actually changed. **Generalize:** a mutation
+   test is only as good as its mutation; assert that the mutation is real
+   before trusting a rejection. And run the WHOLE suite — a flake that
+   depends on generated data will hide from a single-file run.
+2. **The remaining blind spot is architectural, not tooling.** The gate's
+   access decision could not be tested at all, because it lives inside
+   `getServerSideProps` in a JSX file that plain Node cannot parse and this
+   repo has no transform for. The honest response was to scope the tests to
+   what was reachable and open roadmap item (r) to extract that logic,
+   rather than either skipping the coverage silently or refactoring the
+   most security-sensitive page as a side effect of writing tests.
+
+**Second addendum — CodeQL on the new tests, and the same lesson twice.**
+CodeQL raised two High "incomplete URL substring sanitization" alerts
+against `tests/routes.gate.test.mjs`, on the test asserting that an emailed
+magic link points at `SITE_URL` and never at a spoofed request Host. Both
+were test-scope, so no production control depended on them, and the easy
+call was to dismiss them the way Episode 11's ReDoS alert was correctly
+dismissed.
+
+That would have been wrong. Inspecting the assertion rather than the alert
+label: `body.includes("https://videos.test/watch/")` passes for a body
+containing `https://evil.example.com/x?next=https://videos.test/watch/abc`.
+That is precisely the host-header-poisoning shape the test exists to guard
+against — so the guard could have been green while the property it claimed
+to prove was violated. Fixed by extracting every absolute URL from the body
+and asserting on its PARSED host, which is both CodeQL-clean and strictly
+stronger than what it replaced.
+
+A `the host assertion above actually bites` test now pins it, by proving
+the parsed check DISCRIMINATES: a host laundered through a query parameter,
+a clean link, several links in one body, and a suffix lookalike
+(`videos.test.evil.example.com`) — that last one guards against anyone
+"simplifying" the check back to substring or suffix matching later.
+
+**A third alert, and this one was a genuine false positive — handled
+differently.** The first version of that bites-test also asserted that the
+OLD substring form passes the poisoned body, to show the contrast. CodeQL
+flagged that line too, and correctly: it is a literal instance of the weak
+pattern, and the rule cannot distinguish USING a weak check from
+DEMONSTRATING that one is weak. Dismissal was available (Episode 11's
+precedent). But re-reading the line on its own merits settled it without
+needing the scanner's opinion: it compared two string literals in the same
+function, so it could never fail and tested no project code. It was
+narrative decoration shaped like a test. Removed; the comment carries the
+explanation and the real assertions carry the proof.
+
+**Do not reintroduce a literal demonstration of the weak form** — the rule
+will fire on it every scan, forever, and the assertion was never worth
+anything. Three CodeQL episodes now, with three different correct answers:
+benchmark and dismiss (Episode 11's ReDoS), fix because the finding is right
+(the substring guard), and delete because the flagged line should not have
+existed (this one). The reusable discipline is the same each time: read your
+own code, decide on its merits, and let the alert be the prompt rather than
+the verdict.
+
+**This is the second time in one session that a test was green for the wrong
+reason** — the first was the base64url tamper case earlier in this episode.
+Both had the same shape: an assertion whose *mutation or discrimination was
+not actually what the author believed*. Generalized rule, now also in
+validation-and-qa: when a test claims to reject something, prove it rejects
+it — assert the negative case explicitly, in the suite, rather than trusting
+that the check discriminates. And take a scanner's finding as a prompt to
+re-read your own assertion, not as a verdict to accept or dismiss.
+
+**Status: BUILT, ROUTE-TESTED, NOT CERTIFIED.** No live pass, no deploy,
+and the JSX-bound half of the gate remains unautomated.
+
+---
+
 ## When NOT to use this skill
 
 - **Debugging a live symptom right now** (403s, emails not arriving, gate
@@ -477,8 +628,11 @@ actual diffs. If you touch this file, re-verify; wrong archaeology is worse
 than none.
 
 - New episodes since this was written? `git log --all --oneline -5` — anything
-  newer than `5905bba` (branch) / `65dc992` (main) is not chronicled here; read
-  it and add an episode.
+  newer than `5eb7245` (the 2026-09-13 batch, Episode 12) is not chronicled
+  here; read it and add an episode.
+- CI still absent? Yes as of `5eb7245`, but tests are NOT: `npm test` runs a
+  `node --test` suite (`ls tests/*.test.mjs`). "No tests" claims elsewhere
+  predate that commit.
 - Re-verify any episode: `git show <hash>` for its Evidence hashes.
 - CI still absent? `ls .github/workflows 2>/dev/null` (expect: nothing).
 - Overrides still present? `grep -A2 overrides package.json` (expect postcss
