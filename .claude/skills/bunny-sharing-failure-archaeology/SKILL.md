@@ -368,8 +368,11 @@ lib/shares.js; the split-match block in pages/api/watch/request-link.js.
 
 ## Episode 10 — Open/unsettled register
 
-None of these are settled. Do not treat them as bugs to hot-fix in passing;
-each is owned by a sibling skill.
+Mixed status, and the Status column is the authority — several of these have
+since been closed, and a struck-through Item means the concern no longer
+stands as written. Do not treat an OPEN row as a bug to hot-fix in passing;
+each is owned by a sibling skill. If a row here disagrees with the roadmap
+or the architecture contract, the CODE settles it and all three get fixed.
 
 | Item | Detail | Status | Owner skill |
 |---|---|---|---|
@@ -379,8 +382,8 @@ each is owned by a sibling skill.
 | ~~KV `KEYS` is O(N)~~ | Fixed 2026-07-22 — index sets + SMEMBERS replace every hot-path KEYS scan; see roadmap item (a). | SETTLED | bunny-sharing-roadmap |
 | Plaintext Basic Auth compare | PARTLY closed 2026-09-13 (`5eb7245`): the compare is now constant-time (`lib/safeCompare.js`, WebCrypto double-HMAC — Edge has no `node:crypto` `timingSafeEqual`). Still a SINGLE SHARED credential with no lockout and no named users. | PARTLY SETTLED — shared-credential half still OPEN | bunny-sharing-roadmap (d) |
 | ~~Bunny list ceiling~~ | Was never in this register but was live in the code: `itemsPerPage=100` with no `page` param meant video #101+ was invisible and unshareable. Fixed 2026-09-13 (`5eb7245`). | SETTLED | bunny-sharing-roadmap (e) |
-| No automated tests | Was true until 2026-09-13 (`5eb7245`), which added a 50-case `node --test` suite. Still no linter and no CI, and the suite is unit-level only — no route-level or live coverage. | PARTLY SETTLED | bunny-sharing-validation-and-qa |
-| Record stored before email sent | share/share-bulk write the KV record, then email; a send failure leaves a live record with no delivered link. | OPEN | bunny-sharing-roadmap |
+| No automated tests | Was true until 2026-09-13 (`5eb7245`), which added a `node --test` suite; route-level coverage followed the same day (`6781637`) and the suite now stands at 152 cases across 5 route files plus the unit files. Still NO linter and NO CI, so nothing runs it unless a person remembers. Untested surface is now presentational only: React components and the player's postMessage tracking, which would need a JSX transform and therefore a new dependency. | PARTLY SETTLED | bunny-sharing-validation-and-qa |
+| ~~Record stored before email sent leaves a silent ghost~~ | Fixed 2026-07-20 (roadmap item (f)). The ORDERING is unchanged and deliberate — the record is still written first, because the link is live and valid whether or not the notification lands. What changed is that a failed send is no longer silent: `setEmailFailed` (lib/shares.js) flags the record, `share.js`/`share-bulk.js` report per-recipient `failures` instead of 500ing a partly-successful batch, the admin table shows "⚠ email failed" with the error on hover, and Resend clears the flag. This row sat OPEN here for two months after the fix while the roadmap and the architecture contract both recorded it as done. | SETTLED | bunny-sharing-roadmap (f) |
 
 ---
 
@@ -635,6 +638,15 @@ than none.
   predate that commit.
 - Re-verify any episode: `git show <hash>` for its Evidence hashes.
 - CI still absent? `ls .github/workflows 2>/dev/null` (expect: nothing).
+- **Episode 10's register drifts — check it, do not trust it.** It has now
+  gone stale twice: the email-ghost row stayed OPEN for two months after the
+  fix, and the no-tests row still described a 50-case unit-only suite after
+  route tests had landed. Both times the roadmap and the architecture
+  contract were right and this file was wrong, because an adopted item gets
+  written up in the roadmap and the register row is forgotten. Cross-check
+  with: `grep -n "^### ([a-z]).*ADOPTED" .claude/skills/bunny-sharing-roadmap/SKILL.md`
+  — anything ADOPTED there must not read OPEN here. When they disagree, read
+  the code, then fix every skill that is wrong in the same change.
 - Overrides still present? `grep -A2 overrides package.json` (expect postcss
   `^8.5.10`).
 - Two-key trap still current? `grep -n "digest" lib/bunny.js` (expect one
