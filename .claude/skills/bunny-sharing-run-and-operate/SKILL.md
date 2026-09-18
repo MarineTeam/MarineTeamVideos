@@ -45,27 +45,44 @@ scripts exist.
 | `npm run build` | `next build` — production build with Turbopack (Next.js 16.2.10). **Needs NO env vars**: all config is read at request time, and `lib/gate.js`'s fail-loud `GATE_SECRET` check is runtime-only. Verified 2026-07-18: build succeeds in a shell with no `.env.local` and no env vars set. |
 | `npm run start` | `next start` — serves the production build on port 3000. Run `npm run build` first. This DOES need env vars to serve real traffic. |
 
-### Expected build output (as of 2026-07-21, next 16.2.10)
+### Expected build output (as of 2026-09-18, next 16.2.11)
 
-A healthy build prints this exact route manifest — 17 routes plus the
-middleware line:
+A healthy build prints this route manifest — 30 API routes, the admin page,
+404, the two recipient pages, plus the middleware line:
 
 ```
 Route (pages)
 ┌ ○ /
+├   /_app
 ├ ○ /404
+├ ƒ /api/analytics
+├ ƒ /api/backfill-index
 ├ ƒ /api/bundle/request-link
 ├ ƒ /api/cleanup
+├ ƒ /api/gate-log
+├ ƒ /api/groups
+├ ƒ /api/groups/[groupId]
+├ ƒ /api/monitor-status
 ├ ƒ /api/revoke
 ├ ƒ /api/revoke-bulk
+├ ƒ /api/revoke-permanent
+├ ƒ /api/settings
 ├ ƒ /api/share
 ├ ƒ /api/share-bulk
+├ ƒ /api/share/allow-views
+├ ƒ /api/share/allow-views-bulk
 ├ ƒ /api/share/extend
 ├ ƒ /api/share/extend-bulk
 ├ ƒ /api/share/resend
 ├ ƒ /api/share/resend-bulk
 ├ ƒ /api/shares
+├ ƒ /api/shares/export
+├ ƒ /api/unrevoke
+├ ƒ /api/video-invite
+├ ƒ /api/video-invite/remove
+├ ƒ /api/video-watermark
 ├ ƒ /api/videos
+├ ƒ /api/watch/request-access
 ├ ƒ /api/watch/request-link
 ├ ƒ /api/watch/track
 ├ ƒ /bundle/[bundleId]
@@ -76,6 +93,20 @@ Route (pages)
 
 `○` = static, `ƒ` = server-rendered on demand. If a route is missing or a
 page unexpectedly flips between `○` and `ƒ`, something changed in `pages/`.
+
+**Two lines in this manifest matter more than the rest.** `ƒ Proxy
+(Middleware)` missing means the admin auth boundary is not running at all —
+every `/api/*` route and the admin page become public, which is the single
+worst thing that can silently happen to this app. And the three public
+recipient routes (`/api/watch/request-link`, `/api/watch/request-access`,
+`/api/watch/track`) plus `/api/bundle/request-link` must ALL be present and
+must all live under those two prefixes, because the matcher's negative
+lookahead is what keeps them reachable without admin credentials.
+
+**Do not treat this list as a fixed expectation.** It has been wrong twice
+by being copied and then not updated as routes were added (it claimed 17
+routes for two months while the app had 30). Re-capture it rather than
+trusting it: `npm run build 2>&1 | sed -n '/Route (pages)/,/^$/p'`.
 
 ### The deprecation warning is EXPECTED — do not "fix" it casually
 

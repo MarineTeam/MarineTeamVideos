@@ -291,7 +291,7 @@ On Vercel, confirm the vars exist for the environment you're hitting (production
 
 ### Recipient endpoints returning 401
 
-`/api/watch/request-link` must be PUBLIC — recipients have no admin credentials. If it 401s, the matcher regressed. Verify the exact expression at middleware.js:31 is `"/api/((?!watch/).*)"` (negative lookahead excluding `api/watch/`), then probe unauthenticated:
+`/api/watch/request-link`, `/api/watch/request-access`, `/api/watch/track` and `/api/bundle/request-link` must ALL be PUBLIC — recipients have no admin credentials. If any 401s, the matcher regressed. Check it with `grep -n "matcher" middleware.js`: the negative lookahead must exclude BOTH prefixes, `"/api/((?!watch/|bundle/).*)"`. (This paragraph quoted the pre-bundle expression, without `bundle/`, until 2026-09-18 — a copy that would have led you to "fix" a correct matcher into one that 401s every bundle link. Trust the grep, not a quoted value.) Then probe unauthenticated:
 
 ```bash
 curl -s -o /dev/null -w "%{http_code}\n" -X POST \

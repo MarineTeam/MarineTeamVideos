@@ -70,12 +70,15 @@ title, email, expiry) plus a count of live `gatethrottle:*` keys (30-second
 magic-link throttle markers — a nonzero count means someone requested a
 sign-in link within the last 30 s).
 
-**Note (2026-09-13, `5eb7245`): this script predates three key namespaces
-and does not know about them.** It will not show `gateused:*` (single-use
-magic-link markers), `gateip:*` (per-IP rate-limit counters) or
-`accessreq:*` (access-request throttles), and its status column does not
-know about the `maxViews` cap, so a share that is "Used up" still prints as
-Active. Until the script is updated, inspect those directly:
+**Note (updated 2026-09-18): this script predates five keyspaces and the
+view cap, and does not know about any of them.** It will not show
+`gateused:*` (single-use magic-link markers), `gateip:*` (per-IP rate-limit
+counters), `accessreq:*` (access-request throttles), `gatelog:*` (the
+grant-exchange audit log — read that with `/api/gate-log` instead) or the
+`bunnyshare-by-created` sorted set that now orders the admin listing. Its
+status column also does not know about `maxViews`, so a share that is
+"Used up" still prints as Active. Until the script is updated, inspect
+those directly:
 
 ```bash
 # per-IP counter — the one that silently eats your test magic links

@@ -4,10 +4,11 @@ description: >
   The forward-looking register for the bunny-sharing repo: the idea lifecycle
   (proposal → evidence plan → compatibility-safe implementation → certification
   → adoption or documented retirement), the open-problems list with file-level
-  first steps and falsifiable "you have a result when" milestones (sorted
-  share index, audit log, cookie lifetime, view-cap administration, the
-  unbuilt half of the admin auth upgrade) plus the adopted-outcome record
-  for everything already shipped, and honest positioning of what here is standard
+  first steps and falsifiable "you have a result when" milestones (what is
+  still OPEN as of 2026-09-18: cookie/grant lifetime tuning, the
+  shared-credential half of the admin auth upgrade, and bulk restore) plus
+  the adopted-outcome record for everything already shipped, and honest
+  positioning of what here is standard
   practice vs genuinely nice design. Load this when proposing new work,
   prioritizing improvements, or asking "what should be built next". Do NOT
   load for executing the current gate certification

@@ -17,7 +17,7 @@ description: >
 # Change control for bunny-sharing
 
 This repo issues live, emailed `/watch/<token>` links to outside recipients. There
-is a test suite as of 2026-09-13 (`npm test`, 83 cases — unit plus
+is a test suite as of 2026-09-13 (`npm test`, now 152 cases — unit plus
 route-level) but still NO CI
 (two scanner workflows were added and deleted in the past — do not assume CI
 exists), and the suite covers helpers and API routes against in-memory
@@ -50,9 +50,9 @@ in doubt, classify UP.
 | Class | Examples in this repo | Required verification before push |
 | --- | --- | --- |
 | (a) Safe | README prose, comments, inline `styles` objects in pages/index.js or pages/watch/[token].js, admin-UI cosmetics (labels, layout) that do not change fetch calls or form payloads; anything under `tests/` | `npm run build` succeeds (plus `npm test` if you touched `tests/`) |
-| (b) Behavior-affecting | pages/api/* handler logic, lib/mailer.js routing/templates, lib/bunny.js, lib/kv.js, middleware.js (including any rename to the `proxy` convention — the build's deprecation warning tempts this; renaming changes auth coverage and is NOT cosmetic), admin UI flows (share modal, bulk bar, revoke button payloads), cleanup logic | Full protocol in section 3, plus manually exercise the changed flow end-to-end (dev server or deploy preview) |
+| (b) Behavior-affecting | pages/api/* handler logic, lib/mailer.js routing/templates, lib/bunny.js, lib/kv.js, lib/shareQuery.js, lib/csv.js, middleware.js (including any rename to the `proxy` convention — the build's deprecation warning tempts this; renaming changes auth coverage and is NOT cosmetic), admin UI flows (share modal, bulk bar, revoke button payloads), cleanup logic | Full protocol in section 3, plus manually exercise the changed flow end-to-end (dev server or deploy preview) |
 | (c) Compatibility-critical | Anything touching: token format (`crypto.randomBytes(16).toString("hex")`, lib/shares.js:13), the `bunnyshare:` key prefix or record field names/meanings, `/watch/<token>` URL shape, `gate_<token>` cookie name or its `Path=/watch/<token>`, GATE_SECRET semantics (what is signed, how, with what), grant payload/format (`{t,e,x}` + b64url encoding), the `gatethrottle:<token>` key only if repurposed | Section 3 protocol PLUS the backward-compat checklist in section 4. Old artifacts must demonstrably still work |
-| (d) Security-sensitive | lib/mailer.js HTML construction (escapeHtml/isValidUrl paths), pages/api/watch/request-link.js AND pages/api/watch/request-access.js AND pages/api/bundle/request-link.js responses, middleware.js matcher/auth logic, lib/gate.js crypto, baseUrl() in lib/shares.js, lib/safeCompare.js, lib/singleUse.js, lib/rateLimit.js | Section 3 protocol PLUS re-verify every invariant grep in section 3 step 3, and re-read section 2 line by line against the diff |
+| (d) Security-sensitive | lib/mailer.js HTML construction (escapeHtml/isValidUrl paths), pages/api/watch/request-link.js AND pages/api/watch/request-access.js AND pages/api/bundle/request-link.js responses, middleware.js matcher/auth logic, lib/gate.js crypto, baseUrl() in lib/shares.js, lib/safeCompare.js, lib/singleUse.js, lib/rateLimit.js, **lib/watchAccess.js and lib/bundleAccess.js** (since 2026-09-13 these hold the entire access decision — every refusal, the grant exchange, the cookie strings — so they are the gate now, not the pages), lib/gateLog.js | Section 3 protocol PLUS re-verify every invariant grep in section 3 step 3, and re-read section 2 line by line against the diff |
 
 Classes overlap: middleware.js is both (b) and (d); lib/gate.js is (c) AND (d).
 Apply the union of requirements.
@@ -123,12 +123,22 @@ to require it, stop and escalate to the maintainer.
    bytes; unbound grants would let one share's grant unlock another; throwing on
    garbage input turns probing into 500s.
 
-7. **The middleware matcher keeps `/api/watch/*` public and everything else in
-   `/api` plus `/` behind Basic Auth; `/watch/*` pages stay OUT of the matcher**
-   (middleware.js:31: `matcher: ["/", "/api/((?!watch/).*)"]`). *Why:* recipients
-   have no admin credentials — if the matcher swallows `/api/watch/*` or
-   `/watch/*`, every live link breaks behind a 401 (a prime-directive violation);
-   if it stops covering the rest of `/api`, the whole admin surface is public.
+7. **The middleware matcher keeps `/api/watch/*` AND `/api/bundle/*` public
+   and everything else in `/api` plus `/` behind Basic Auth; `/watch/*` and
+   `/bundle/*` pages stay OUT of the matcher**. The current value is
+   `matcher: ["/", "/api/((?!watch/|bundle/).*)"]` — verify with
+   `grep -n "matcher" middleware.js` rather than trusting a quoted copy.
+   *Why:* recipients have no admin credentials — if the matcher swallows
+   either public prefix, every live link of that kind breaks behind a 401 (a
+   prime-directive violation); if it stops covering the rest of `/api`, the
+   whole admin surface is public.
+   *Correction, 2026-09-18:* this entry quoted the PRE-BUNDLE matcher
+   (`(?!watch/)`, no `bundle/`) from 2026-07-20 until today — a
+   non-negotiable that stated its own invariant wrongly for two months.
+   Anyone "restoring" the quoted value would have 401'd every bundle link.
+   The lesson is in the instruction above: cite the grep, not the copy.
+   A literal value pasted into prose is a fact with no owner; it rots
+   silently and reads as authoritative while doing it.
 
 8. **Bulk share = one token/record/link PER recipient × video pair**
    (pages/api/share-bulk.js loops `createShareRecord` per recipient per
@@ -159,8 +169,11 @@ Must succeed with zero errors. As of 2026-07-18 it succeeds with NO env vars set
 That warning is known and deliberate — do not "fix" it as a drive-by (see
 section 1 class (b)). The route list must still show `ƒ /api/watch/request-link`,
 `ƒ /watch/[token]`, and `ƒ Proxy (Middleware)`. Since 2026-09-13 it must also
-show `ƒ /api/watch/request-access`, `ƒ /api/shares/export` and
-`ƒ /api/analytics`. (`Proxy (Middleware)` registering matters more than it
+show `ƒ /api/watch/request-access`, `ƒ /api/shares/export`,
+`ƒ /api/analytics`, `ƒ /api/gate-log`, `ƒ /api/share/allow-views` and
+`ƒ /api/share/allow-views-bulk` — 30 API routes in total. Re-capture rather
+than trusting a copied list: the manifest in bunny-sharing-run-and-operate
+went stale for two months by being copied and not updated. (`Proxy (Middleware)` registering matters more than it
 used to: middleware is now `async` and awaits a WebCrypto compare, so a
 failure to register would silently drop the entire admin auth boundary.)
 
@@ -168,7 +181,7 @@ failure to register would silently drop the entire admin auth boundary.)
 ```bash
 npm test
 ```
-83+ cases, no env vars, no network. Required for every class except (a)
+152+ cases, no env vars, no network. Required for every class except (a)
 docs-only. If your diff touched a pure helper — `lib/gate.js`,
 `lib/shares.js`, `lib/settings.js`, `lib/bunny.js`, `lib/shareQuery.js`,
 `lib/csv.js`, `lib/safeCompare.js`, `lib/singleUse.js`, `lib/rateLimit.js` —
@@ -338,7 +351,8 @@ Rules:
 Facts verified against the working tree on 2026-07-18 (branch
 `claude/bulk-share-separate-links-auth-cblrle`, HEAD `5905bba`). Re-verify with:
 
-- Matcher: `grep -n "matcher" middleware.js` (expect `["/", "/api/((?!watch/).*)"]`)
+- Matcher: `grep -n "matcher" middleware.js` (expect BOTH public prefixes:
+  `["/", "/api/((?!watch/|bundle/).*)"]`)
 - Prefix + record shape: `grep -rn "bunnyshare:" lib pages` and `sed -n '12,30p' lib/shares.js`
 - Cookie name/path: `grep -n "gate_\|Path=/watch" "pages/watch/[token].js"`
 - Fail-loud secret / timingSafeEqual: `grep -n "GATE_SECRET\|timingSafeEqual" lib/gate.js`

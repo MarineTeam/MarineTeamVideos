@@ -43,44 +43,51 @@ Jargon, defined once:
 
 ```mermaid
 flowchart TB
-  subgraph AdminSide["Admin surface (HTTP Basic Auth via middleware.js)"]
+  subgraph AdminSide["Admin surface — HTTP Basic Auth via middleware.js (constant-time compare)"]
     Admin[Admin browser] --> Index["/ (pages/index.js)"]
-    Index --> APIvideos["/api/videos"]
-    Index --> APIshare["/api/share"]
-    Index --> APIbulk["/api/share-bulk"]
-    Index --> APIshares["/api/shares"]
-    Index --> APIrevoke["/api/revoke"]
-    Index --> APIcleanup["/api/cleanup"]
+    Index --> APIcreate["/api/share, /api/share-bulk<br/>/api/video-invite"]
+    Index --> APIlist["/api/shares, /api/shares/export<br/>/api/analytics"]
+    Index --> APIlifecycle["/api/revoke(-bulk), /api/unrevoke<br/>/api/revoke-permanent<br/>/api/share/extend, /api/share/allow-views<br/>/api/share/resend"]
+    Index --> APIops["/api/settings, /api/groups<br/>/api/cleanup, /api/backfill-index<br/>/api/gate-log"]
   end
 
   subgraph Backends
-    KV[("Upstash Redis REST\nbunnyshare:* records\nlib/kv.js")]
-    Bunny["Bunny Stream API\nlib/bunny.js"]
-    Mail["Email provider\nResend API or SMTP\nlib/mailer.js deliver()"]
+    KV[("Upstash Redis REST — lib/kv.js<br/>bunnyshare:* records<br/>bunnyshare-index + bunnyshare-by-created<br/>bunnybundle:*, bunnysettings:global<br/>ephemeral: gatethrottle/gateip/gateused/accessreq/gatelog")]
+    Bunny["Bunny Stream API<br/>lib/bunny.js (paginated)"]
+    Mail["Email provider<br/>Resend API or SMTP<br/>lib/mailer.js deliver()"]
   end
 
-  APIvideos --> Bunny
-  APIshare --> KV
-  APIshare --> Mail
-  APIbulk --> KV
-  APIbulk --> Mail
-  APIshares --> KV
-  APIrevoke --> KV
-  APIcleanup --> KV
+  APIcreate --> KV
+  APIcreate --> Mail
+  APIlist --> KV
+  APIlifecycle --> KV
+  APIops --> KV
+  Index --> Bunny
 
-  subgraph RecipientSide["Recipient surface (PUBLIC — never behind Basic Auth)"]
-    Rcpt[Recipient browser] -->|"1. opens emailed /watch/&lt;token&gt;"| Watch["/watch/[token]\npages/watch/[token].js"]
-    Watch -->|"2. no grant → email form POSTs"| ReqLink["/api/watch/request-link"]
-    ReqLink -->|"3. email matches record"| Mail
-    Mail -->|"4. magic link ?grant= (15 min)"| Rcpt
-    Rcpt -->|"5. clicks magic link"| Watch
-    Watch -->|"6. sets cookie gate_&lt;token&gt;, redirects clean URL"| Rcpt
-    Watch -->|"7. valid cookie → signed iframe embed (3600 s)"| Player["iframe.mediadelivery.net"]
+  subgraph RecipientSide["Recipient surface — PUBLIC, never behind Basic Auth"]
+    Rcpt[Recipient browser] -->|"opens emailed link"| Entrance{"/watch/&lt;token&gt;<br/>or /bundle/&lt;id&gt;"}
+    Entrance --> Decide["lib/watchAccess.js<br/>lib/bundleAccess.js<br/>(decides; performs no I/O)"]
+    Decide -->|"no grant → email form"| ReqLink["/api/watch/request-link<br/>/api/bundle/request-link<br/>(uniform response, per-IP capped)"]
+    ReqLink -->|"only if email matches"| Mail
+    Mail -->|"single-use magic link, 15 min"| Rcpt
+    Rcpt -->|"clicks once"| Entrance
+    Decide -->|"exchange: mint cookie(s), spend grant, audit"| Rcpt
+    Decide -->|"valid cookie → signed embed, 3600 s"| Player["iframe.mediadelivery.net"]
+    Entrance -->|"expired link"| ReqAccess["/api/watch/request-access<br/>→ notifies the admin"]
   end
 
-  Watch --> KV
+  Decide --> KV
   ReqLink --> KV
+  ReqAccess --> Mail
 ```
+
+The admin boxes are GROUPED AND REPRESENTATIVE, not exhaustive — there are
+30 API routes and drawing each would obscure the one thing this diagram
+exists to show: which surface a route sits on. The authoritative list is
+`npm run build`'s route manifest (reproduced in
+bunny-sharing-run-and-operate). The split itself is not representative and
+is exact: everything under `/api/watch/` and `/api/bundle/` is public, and
+everything else is behind Basic Auth, enforced by one regex (section 2.7).
 
 Two access factors gate playback: **possession of the URL** (unguessable
 token) **and control of the inbox** (magic link). Neither alone suffices.
@@ -114,7 +121,7 @@ suggestions; they are the reasons the system is safe and simple.
   stored server-side.
 - **Why**: Zero storage and zero cleanup for sessions. Revocation is
   inherited for free: every request to `/watch/<token>` re-loads the share
-  record first (`pages/watch/[token].js:122-132`) and rejects
+  record first (`decideWatchAccess` in lib/watchAccess.js) and rejects
   revoked/expired shares *before* the grant is even checked — so a grant is
   only as alive as its share record.
 - **What breaks — and the built-in footgun**: Rotating `GATE_SECRET`
@@ -147,7 +154,7 @@ suggestions; they are the reasons the system is safe and simple.
 - **Decision**: `request-link` signs a grant expiring in
   `MAGIC_LINK_TTL_MS = 15 * 60 * 1000` (`pages/api/watch/request-link.js:8`)
   and emails `<site>/watch/<token>?grant=<...>`. On click,
-  `pages/watch/[token].js:137-155` verifies it, signs a **new** cookie grant
+  `decideWatchAccess` (lib/watchAccess.js) verifies it, signs a **new** cookie grant
   whose `expiresAt` equals the share's `record.expiresAt`, sets the cookie,
   and 302-redirects to the clean `/watch/<token>` URL.
 - **Why**: The emailed grant must be short-lived because email is the leaky
@@ -255,8 +262,8 @@ suggestions; they are the reasons the system is safe and simple.
 - **Decision**: Authorization lives in the KV record. Playback uses a
   separately signed Bunny embed URL — sha256 **hex** of
   `BUNNY_TOKEN_KEY + videoId + expires`, generated per page view with
-  3600 s expiry (`lib/bunny.js:56-65`, called at
-  `pages/watch/[token].js:171`).
+  3600 s expiry (`generateEmbedUrl` in lib/bunny.js, called from the
+  authorized branch of `pages/watch/[token].js`).
 - **Why**: The KV record gives revocation and audit; the Bunny token stops
   anyone from lifting the iframe `src` and hot-linking it forever. Two
   layers, two jobs.
@@ -268,7 +275,7 @@ suggestions; they are the reasons the system is safe and simple.
 - **What breaks**: Caching the embed URL in the record would freeze the
   `expires` timestamp and dead-link every share after an hour. Note the
   sibling trap: `signCdnUrl` for thumbnails uses a **different key**
-  (`BUNNY_CDN_TOKEN_KEY`) and **base64url** encoding (`lib/bunny.js:40-52`)
+  (`BUNNY_CDN_TOKEN_KEY`) and **base64url** encoding (`signCdnUrl` in lib/bunny.js)
   — mixing the two schemes was a real incident (`65dc992`); the signing math
   lives in bunny-stream-reference.
 
@@ -355,7 +362,8 @@ suggestions; they are the reasons the system is safe and simple.
 
 - **Decision**: `middleware.js` applies HTTP Basic Auth
   (`ADMIN_USER`/`ADMIN_PASS`) with matcher
-  `["/", "/api/((?!watch/|bundle/).*)"]` (`middleware.js:29-32`, widened
+  `["/", "/api/((?!watch/|bundle/).*)"]` (the `config` export in
+  middleware.js — verify with `grep -n "matcher" middleware.js`; widened
   2026-07-20 to add `bundle/`). That single regex is the entire admin/public
   split: `/` and every `/api/*` route are protected **except**
   `/api/watch/*` and `/api/bundle/*`; `/watch/*` and `/bundle/*` pages are
@@ -521,7 +529,7 @@ scope decisions or unfinished hardening. "Candidate-fix" items live in
 | ~~`kvKeys` uses Redis `KEYS` — O(N) full scan~~ FIXED 2026-07-22: `bunnyshare-index`/`bunnybundle-index` SETs + `SMEMBERS` replace it everywhere except the one-time `/api/backfill-index` migration | N/A | Adopted (bunny-sharing-roadmap item a) |
 | ~~Magic-link grant is NOT single-use~~ | — | FIXED 2026-09-13 (`5eb7245`), section 2.2's bounded exception. Not live-certified; degrades to the old replayable behaviour if KV errors, by design |
 | ~~No per-IP rate limiting~~ | Low | FIXED 2026-09-13 (`5eb7245`): `gateip:<ip>`, 10/min, on both public request-link endpoints. Coarse and non-atomic ON PURPOSE — a spam dampener, not a boundary; it can undercount under concurrency and fails open on any error |
-| No linter, no CI; tests exist but are unit-level only | Medium (process risk, not runtime risk) | Partly addressed 2026-09-13 (`5eb7245`): 50-case `node --test` suite. NO route-level, component-level, or live coverage, and nothing runs it automatically on push — bunny-sharing-validation-and-qa |
+| No linter, no CI; nothing runs the tests unless a person remembers | Medium (process risk, not runtime risk) | Partly addressed 2026-09-13: a `node --test` suite now stands at 152 cases with unit AND route-level coverage (`5eb7245`, `6781637`, and after). Remaining untested surface is presentational — React components and the player's postMessage tracking — which needs a JSX transform and so a new dependency. See bunny-sharing-validation-and-qa |
 | Filtered/searched `/api/shares`, and `/api/analytics`, read EVERY share record per call | Low (cost/latency, not correctness) | Accepted by design — roadmap (m). The UNFILTERED listing became bounded 2026-09-13 via `bunnyshare-by-created`; filtering cannot use an index without a second source of truth, and a rollup legitimately needs every record |
 | ~~A used-up `maxViews` share cannot be revived without a new token~~ | — | FIXED 2026-09-13: `/api/share/allow-views` raises the cap in place, same token (2.8b) |
 | `share`/`share-bulk` store records BEFORE sending email; a send failure leaves a live record whose recipient never got the link | Low | Fixed 2026-07-20: failed sends are flagged (`emailFailed`/`emailError`, additive fields) instead of silently existing, and an admin "Resend" button re-sends and clears the flag — see section 5.1. Resend (`/api/share/resend`, `pages/api/share/resend.js` exporting `resendOne`) is not gated on `emailFailed` — any active share can be re-sent on demand, and `/api/share/resend-bulk` does the same for multiple selected shares in one call (admin selects rows via checkboxes in the shares table) |
@@ -734,7 +742,7 @@ distinct Path scopes, so there is no name or scope collision even though a
 | Magic link | `<baseUrl>/watch/<token>?grant=<urlencoded grant>` | `pages/api/watch/request-link.js:55` |
 | Bundle link | `<baseUrl>/bundle/<bundleId>` | `lib/bundles.js` `createBundleRecord` |
 | Bundle magic link | `<baseUrl>/bundle/<bundleId>?grant=<urlencoded grant>` | `pages/api/bundle/request-link.js` |
-| Embed | `https://iframe.mediadelivery.net/embed/<BUNNY_LIBRARY_ID>/<videoId>?token=<sha256 hex>&expires=<unix seconds>` | `lib/bunny.js:64` |
+| Embed | `https://iframe.mediadelivery.net/embed/<BUNNY_LIBRARY_ID>/<videoId>?token=<sha256 hex>&expires=<unix seconds>` | `generateEmbedUrl`, lib/bunny.js |
 
 `baseUrl(req)` = `SITE_URL`, always — it throws if unset. There is no Host
 header fallback (removed 2026-07-22; see invariant 3 and failure-archaeology
@@ -787,9 +795,20 @@ and one new public route), 2.9 (six senders, two of them admin-facing),
 section 3 invariants 4/10/11, section 4's weak-points register, 5.1
 (`maxViews`, `note`), 5.1's auxiliary-key table (`gateused:`, `gateip:`,
 `accessreq:`), and 5.1b (`notifyOnFirstPlay`). That batch is verified by
-build, a 50-case unit suite, and invariant greps — NOT by a live pass and
-NOT by route-level tests; see failure-archaeology Episode 12 for the
-evidence-shape comparison against the July items.
+build, a unit suite, and invariant greps. Route-level tests followed in
+`6781637` and the suite now stands at 152 cases; NONE of it is a live pass.
+See failure-archaeology Episode 12 for the evidence-shape comparison
+against the July items.
+
+**On file:line references in this document.** Treat every `file.js:NN` here
+as indicative, never as an address. Line numbers rot on the first refactor
+that touches the file, and worse, a reference can survive a move and point
+confidently at the wrong thing — the watch-page references in sections 2.2,
+2.3 and 2.5 all pointed into a file that no longer contained the logic after
+the 2026-09-13 extraction. Symbol names (`decideWatchAccess`,
+`generateEmbedUrl`, `buildGateCookie`) are grep-able and survive
+restructuring; prefer them when you edit this file, and when a line number
+disagrees with reality, trust the code and fix the reference.
 
 Re-verify volatile facts before trusting them:
 
