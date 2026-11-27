@@ -42,30 +42,49 @@ scripts exist.
 | Command | What it does |
 | --- | --- |
 | `npm run dev` | `next dev` — dev server on http://localhost:3000. Needs a populated `.env.local` for anything real to work (Basic Auth env vars, Bunny, KV, email, GATE_SECRET). If env vars are missing, see bunny-sharing-env-and-setup. |
-| `npm run build` | `next build` — production build with Turbopack (Next.js 16.2.10). **Needs NO env vars**: all config is read at request time, and `lib/gate.js`'s fail-loud `GATE_SECRET` check is runtime-only. Verified 2026-07-18: build succeeds in a shell with no `.env.local` and no env vars set. |
+| `npm run build` | `next build` — production build with Turbopack (Next.js 16.4.6 as of 2026-11-27). **Needs NO env vars**: all config is read at request time, and `lib/gate.js`'s fail-loud `GATE_SECRET` check is runtime-only. Verified 2026-07-18: build succeeds in a shell with no `.env.local` and no env vars set. |
 | `npm run start` | `next start` — serves the production build on port 3000. Run `npm run build` first. This DOES need env vars to serve real traffic. |
 
-### Expected build output (as of 2026-07-21, next 16.2.10)
+### Expected build output (as of 2026-11-27, next 16.4.6)
 
-A healthy build prints this exact route manifest — 17 routes plus the
-middleware line:
+A healthy build prints this exact route manifest — 35 routes (including the
+non-routable `/_app` entry) plus the middleware line. A route missing from
+this list means a page or handler failed to register; a NEW route should be
+added here in the same change that adds it:
 
 ```
 Route (pages)
 ┌ ○ /
+├   /_app
 ├ ○ /404
+├ ƒ /api/analytics
+├ ƒ /api/backfill-index
 ├ ƒ /api/bundle/request-link
 ├ ƒ /api/cleanup
+├ ƒ /api/gate-log
+├ ƒ /api/groups
+├ ƒ /api/groups/[groupId]
+├ ƒ /api/monitor-status
 ├ ƒ /api/revoke
 ├ ƒ /api/revoke-bulk
+├ ƒ /api/revoke-permanent
+├ ƒ /api/settings
 ├ ƒ /api/share
 ├ ƒ /api/share-bulk
+├ ƒ /api/share/allow-views
+├ ƒ /api/share/allow-views-bulk
 ├ ƒ /api/share/extend
 ├ ƒ /api/share/extend-bulk
 ├ ƒ /api/share/resend
 ├ ƒ /api/share/resend-bulk
 ├ ƒ /api/shares
+├ ƒ /api/shares/export
+├ ƒ /api/unrevoke
+├ ƒ /api/video-invite
+├ ƒ /api/video-invite/remove
+├ ƒ /api/video-watermark
 ├ ƒ /api/videos
+├ ƒ /api/watch/request-access
 ├ ƒ /api/watch/request-link
 ├ ƒ /api/watch/track
 ├ ƒ /bundle/[bundleId]
@@ -92,6 +111,12 @@ boundary with the matcher `["/", "/api/((?!watch/|bundle/).*)"]`
 perimeter and must go through bunny-sharing-change-control, with the matcher
 invariant re-verified (all admin routes 401 without credentials; `/api/watch/*`
 and `/watch/*` stay public). Never do it as a drive-by "fix the warning" edit.
+
+Since next 16.4.x (verified 16.4.6, 2026-11-27) every build also prints
+`⚠ React 18 support is deprecated in Next.js 16 and will be removed in
+Next.js 17. Please upgrade to React 19.` That warning is also expected and
+harmless on 16.x. Upgrading to React 19 is its own change that goes through
+change-control. Don't fold it into a dependency bump.
 
 ## 2. The two user journeys (as built)
 
