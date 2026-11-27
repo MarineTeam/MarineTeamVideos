@@ -64,7 +64,8 @@ Jargon, once:
 | `/api/watch/request-link` or `/api/bundle/request-link` returns 401 | `git diff` middleware.js matcher | Matcher regressed; must be `"/api/((?!watch/\|bundle/).*)"` (middleware.js:31, widened 2026-07-20) | S4 |
 | `KV error 401: …` (or other status) in errors/logs | `curl` KV directly | Bad `KV_REST_API_TOKEN` / wrong `KV_REST_API_URL` (lib/kv.js:14) | S5 |
 | Share record missing / shares table empty though shares exist | `KEYS bunnyshare:*` vs `KEYS share:*` | Wrong KV database, or records under the pre-30ecd7f `share:` prefix (orphaned) | S5 |
-| Build prints `⚠ The "middleware" file convention is deprecated. Please use "proxy" instead.` | — | EXPECTED on next 16.2.10. Not an error. Do not rename without change-control. | S6 |
+| Build prints `⚠ The "middleware" file convention is deprecated. Please use "proxy" instead.` | — | EXPECTED on next 16.x (still printed on 16.4.6, 2026-11-27). Not an error. Do not rename without change-control. | S6 |
+| Build prints `⚠ React 18 support is deprecated in Next.js 16 and will be removed in Next.js 17.` | — | EXPECTED on next 16.4.x. Not an error. A React 19 upgrade is its own change-controlled change, not a drive-by fix. | S6 |
 | `/bundle/<id>` shows "Link not found" right after a bulk share | `KEYS bunnybundle:*` in KV; confirm `share-bulk` actually returned a `bundleLink` in its response | Bundle creation failed silently, or you're pointed at a different KV database than the app used (see S5's `share:`/`bunnyshare:` divergence check — same trap applies to `bunnybundle:`) | S7 |
 | Bundle magic link exchanges fine but individual videos still show the email form | Check the exchange response's `Set-Cookie` headers — should be ONE `gate_bundle_<id>` PLUS one `gate_<token>` per member in the SAME response | Cookies not applied by the client (multiple `Set-Cookie` headers dropped by a proxy/test tool that only keeps the last one — real browsers handle this fine); or a member's own `bunnyshare:<token>` record was already revoked/expired at exchange time, which correctly skips minting that one cookie (pages/bundle/[bundleId].js) | S7 |
 | `/api/share/extend` returns `"Cannot extend a revoked share"` | `kv-inspect` the record's `revoked` field | Working as intended — extend deliberately refuses revoked records rather than doubling as an un-revoke (pages/api/share/extend.js, added 2026-07-21). There is no endpoint that un-revokes; that would need a new, separate action | S1-S7 (n/a) |
@@ -332,13 +333,18 @@ Branches:
 
 ## S6 — Build / dev
 
-`npm run build` on next 16.2.10 prints:
+`npm run build` on next 16.4.6 prints:
 
 ```
+⚠ React 18 support is deprecated in Next.js 16 and will be removed in Next.js 17. Please upgrade to React 19. ...
 ⚠ The "middleware" file convention is deprecated. Please use "proxy" instead.
 ```
 
-This is EXPECTED (reproduced 2026-07-18, build succeeds). It is a deprecation notice, not an error, and the route summary still shows `ƒ Proxy (Middleware)`. Do NOT "fix" it by renaming middleware.js → proxy.js in passing: the middleware carries the auth-boundary invariant (S4) and the rename is a behavior-affecting change that goes through bunny-sharing-change-control with the S4 public-endpoint probe as verification.
+Both are EXPECTED. The middleware one was reproduced 2026-07-18 on 16.2.10, and
+both were reproduced 2026-11-27 on 16.4.6; the build succeeds either way. The
+React one only means React 19 will be required by Next 17. Moving to React 19
+is a separate change that goes through change-control. The rest of this note
+is about the middleware warning. It is a deprecation notice, not an error, and the route summary still shows `ƒ Proxy (Middleware)`. Do NOT "fix" it by renaming middleware.js → proxy.js in passing: the middleware carries the auth-boundary invariant (S4) and the rename is a behavior-affecting change that goes through bunny-sharing-change-control with the S4 public-endpoint probe as verification.
 
 Also expected: build succeeds with ZERO env vars set (verified 2026-07-18) — every config failure in this playbook is runtime-only. A green build proves nothing about configuration.
 

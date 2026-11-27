@@ -143,14 +143,28 @@ fallback.
 were needed. Note the major-version jumps (next 14→16, nodemailer 6→9) were
 absorbed without API breakage in this codebase.
 
-**Evidence.** `git show 4dd1e44` (full commit message enumerates the counts);
-current `package.json` still pins `next 16.2.10`, `nodemailer 9.0.3`, and
-carries the `"overrides": { "postcss": "^8.5.10" }` block.
+**Evidence.** `git show 4dd1e44` (full commit message enumerates the counts).
 
-**Status: SETTLED.** The `overrides` entry is load-bearing CVE remediation —
-do not remove it casually (e.g. during a "cleanup" or lockfile regeneration).
-Removing it requires re-checking that every transitive postcss is ≥ the
-patched version.
+**Follow-ups, same technique each time (straight bumps, no code changes):**
+- 2026-07-22 `3cf3ef3`: `next` → 16.2.11. Then `c816cd8` added a `sharp`
+  `overrides` entry (`^0.35.3`), using the same trick as postcss.
+- 2026-11-27 sweep (25 Dependabot alerts, see CHANGELOG "Unreleased → Fixed"):
+  `next` → 16.4.6, `nodemailer` → 10.6.1 (a MAJOR bump whose only breaking
+  change is Node ≥ 20; `lib/mailer.js` needed no edits and was smoke-tested
+  against a local fake SMTP server). Overrides floors raised to
+  `postcss ^8.5.23` and `sharp ^0.35.5`. Transitive `source-map-js` and
+  `baseline-browser-mapping` were refreshed in the lockfile.
+
+Current `package.json` (as of 2026-11-27) pins `next 16.4.6` and
+`nodemailer 10.6.1`, and carries
+`"overrides": { "postcss": "^8.5.23", "sharp": "^0.35.5" }`.
+
+**Status: SETTLED.** Both `overrides` entries are load-bearing CVE
+remediation. Do not remove them casually (e.g. during a "cleanup" or
+lockfile regeneration). Removing either one requires re-checking that every
+transitive copy is at or above the patched version. Raising a floor is
+fine. When bumping, prefer the first patched version, or the version `next`
+itself pins if that is newer, so the lockfile can never resolve backwards.
 
 ---
 
@@ -635,8 +649,8 @@ than none.
   predate that commit.
 - Re-verify any episode: `git show <hash>` for its Evidence hashes.
 - CI still absent? `ls .github/workflows 2>/dev/null` (expect: nothing).
-- Overrides still present? `grep -A2 overrides package.json` (expect postcss
-  `^8.5.10`).
+- Overrides still present? `grep -A3 overrides package.json` (expect postcss
+  `^8.5.23` and sharp `^0.35.5` as of 2026-11-27, or higher floors).
 - Two-key trap still current? `grep -n "digest" lib/bunny.js` (expect one
   `base64` at signCdnUrl, one `hex` at generateEmbedUrl).
 - Guards still load-bearing? `grep -n "escapeHtml\|isValidUrl" lib/mailer.js`.

@@ -267,6 +267,50 @@ Nine version tags mark points release notes were cut from this history:
   failure signature.
 
 ### Fixed
+- **Dependency CVE sweep (2026-11-27): 25 open Dependabot alerts closed,
+  `npm audit` back to 0 vulnerabilities.** Version bumps only, no app code
+  changed:
+  - `next` 16.2.11 → **16.4.6** (exact pin). Clears every open Next.js
+    advisory, including the five critical RCEs (Image Optimization with
+    SVG/AVIF, `next/og` `ImageResponse`, `use cache` typed arrays,
+    Windows-hosted servers), the Image Optimization SSRF, the Server
+    Actions DoS, and the SSG/ISR and `use cache` cache-poisoning and
+    disclosure issues. Most of those sit in features this Pages Router app
+    does not use (`use cache`, `next/og`, Server Actions, App Router), but
+    the upgrade closes them regardless. Minor-version bump within 16.x;
+    the route manifest and `ƒ Proxy (Middleware)` registration are
+    unchanged.
+  - `nodemailer` 9.1.1 → **10.6.1** (exact pin). Clears the addressparser
+    DoS and recipient-confusion advisories and the DKIM, SMTP-AUTH and
+    reply-parsing DoS issues. **Major bump**: 10.0.0's only listed breaking
+    change is "Node.js 20 or newer required" (plus an internal TypeScript
+    rewrite with ESM and CJS builds). The `createTransport({host, port,
+    secure, auth})` + `sendMail({from, to, subject, text, html})` calls in
+    `lib/mailer.js` are unchanged. Deploys must run on Node ≥ 20 (Vercel's
+    current default is fine).
+  - `postcss` dependency and `overrides` floor `^8.5.10` → **`^8.5.23`**
+    (resolves to 8.5.33), clearing both sourceMappingURL path-traversal
+    advisories. 8.5.23 is the version `next` 16.4.6 itself pins, and the
+    first patched release.
+  - `sharp` `overrides` floor `^0.35.3` → **`^0.35.5`**, clearing the
+    libheif and librsvg advisories. It is still only reachable through
+    `next/image`, which this app never imports.
+  - Transitive packages refreshed in the lockfile: `source-map-js` 1.2.1 →
+    1.2.4 (indexed source-map DoS) and `baseline-browser-mapping` 2.10.42 →
+    2.11.40 (process-termination DoS).
+
+  Verified: `npm audit` reports 0 vulnerabilities. `npm run build` passes with
+  no env vars set and registers all routes plus `ƒ Proxy (Middleware)`.
+  `npm test` passes 152/152, the gate self-test passes 9/9, and every
+  change-control invariant grep still matches. The real `lib/mailer.js` SMTP
+  branch was also run end to end against a local fake SMTP server on
+  nodemailer 10.6.1: AUTH PLAIN, envelope, To/Subject, multipart text+html,
+  HTML-escaped title and watch link all correct. **Not yet exercised:** a
+  live send through a real SMTP provider, or the Resend path (the `resend`
+  package was not changed). The build now also prints a second expected
+  warning, `React 18 support is deprecated in Next.js 16`. Upgrading React
+  to 19 is a separate change and was deliberately left out of this sweep.
+
 - **Two CodeQL "incomplete URL substring sanitization" alerts on the gate
   route tests, fixed by strengthening the assertion rather than dismissing
   the finding.** Both were test-scope, so nothing in production depended on

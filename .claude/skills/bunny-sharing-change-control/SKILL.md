@@ -157,7 +157,11 @@ Must succeed with zero errors. As of 2026-07-18 it succeeds with NO env vars set
 (GATE_SECRET included — it is runtime-only) and prints one expected warning:
 `The "middleware" file convention is deprecated. Please use "proxy" instead.`
 That warning is known and deliberate — do not "fix" it as a drive-by (see
-section 1 class (b)). The route list must still show `ƒ /api/watch/request-link`,
+section 1 class (b)). Since next 16.4.x (verified 16.4.6, 2026-11-27) it
+also prints `React 18 support is deprecated in Next.js 16 and will be
+removed in Next.js 17`. That warning is also expected. Moving to React 19 is
+its own behavior-affecting change (every page and component re-renders under
+it), not something to slip into a dependency bump. The route list must still show `ƒ /api/watch/request-link`,
 `ƒ /watch/[token]`, and `ƒ Proxy (Middleware)`. Since 2026-09-13 it must also
 show `ƒ /api/watch/request-access`, `ƒ /api/shares/export` and
 `ƒ /api/analytics`. (`Proxy (Middleware)` registering matters more than it
